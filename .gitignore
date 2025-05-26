@@ -1,0 +1,6 @@
+outputs/
+checkpoints/
+dataset/
+
+*.pdf
+
