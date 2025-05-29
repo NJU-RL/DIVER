@@ -65,6 +65,8 @@ def compute_gae_advantage_return(token_level_rewards: torch.Tensor, values: torc
 def compute_grpo_outcome_advantage(token_level_rewards: torch.Tensor,
                                    eos_mask: torch.Tensor,
                                    index: torch.Tensor,
+                                   shaping_reward=None,
+                                   shaping_coef=0.3,
                                    epsilon: float = 1e-6,
                                    use_std: bool = True):
     """
@@ -109,8 +111,13 @@ def compute_grpo_outcome_advantage(token_level_rewards: torch.Tensor,
             else:
                 scores[i] = (scores[i] - id2mean[index[i]])
         scores = scores.unsqueeze(-1).tile([1, response_length]) * eos_mask
+        if shaping_reward is not None:
+            combined_scores = shaping_coef * shaping_reward + scores
+        else:
+            combined_scores = scores
+            
 
-    return scores, scores
+    return combined_scores, scores
 
 
 # NOTE(sgm): this implementation only consider outcome supervision, where the reward is a scalar.
@@ -161,7 +168,7 @@ def compute_reinforce_outcome_advantage(token_level_rewards: torch.Tensor,
     return scores, scores
 
 def compute_reinforce_plus_plus_outcome_advantage(token_level_rewards: torch.Tensor, eos_mask: torch.Tensor,
-                                                  gamma: torch.Tensor, shaping_reward=None, shaping_coef=0.0):
+                                                  gamma: torch.Tensor, shaping_reward=None, shaping_coef=0.1):
     """
     Compute advantage for REINFORCE++. 
     This implementation is based on the paper: https://arxiv.org/abs/2501.03262

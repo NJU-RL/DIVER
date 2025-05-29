@@ -124,6 +124,7 @@ class ActorRolloutRefWorker(Worker):
             self.config.actor.ppo_mini_batch_size //= (self.device_mesh.shape[0] // self.ulysses_sequence_parallel_size)
             self.config.actor.ppo_micro_batch_size //= (self.device_mesh.shape[0] //
                                                         self.ulysses_sequence_parallel_size)
+            # print("#########config:", self.config.actor)
         if self._is_rollout:
             self.config.rollout.log_prob_micro_batch_size //= (self.device_mesh.shape[0] //
                                                                self.ulysses_sequence_parallel_size)

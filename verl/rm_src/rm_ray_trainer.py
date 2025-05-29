@@ -149,10 +149,20 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         response_length = responses.size(-1)
         attention_mask = data.batch['attention_mask']
         response_mask = attention_mask[:, -response_length:]
-        advantages, returns = rm_calculate_adv.compute_grpo_outcome_advantage(token_level_rewards=token_level_rewards,
-                                                                        eos_mask=response_mask,
-                                                                        index=index,
-                                                                        use_std=grpo_use_std)
+        if add_reward_shaping:
+            advantages, returns = rm_calculate_adv.compute_grpo_outcome_advantage(
+                                                        token_level_rewards=token_level_rewards,
+                                                        shaping_reward=data.batch['reward_shaping'],
+                                                        shaping_coef=0.8,
+                                                        eos_mask=response_mask,
+                                                        index=index,
+                                                        use_std=grpo_use_std)
+        else:
+            advantages, returns = rm_calculate_adv.compute_grpo_outcome_advantage(
+                                                        token_level_rewards=token_level_rewards,
+                                                        eos_mask=response_mask,
+                                                        index=index,
+                                                        use_std=grpo_use_std)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == 'reinforce':
@@ -175,10 +185,16 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         response_mask = attention_mask[:, -response_length:]
         if add_reward_shaping:
             advantages, returns = rm_calculate_adv.compute_reinforce_plus_plus_outcome_advantage(
-            token_level_rewards=token_level_rewards, eos_mask=response_mask, gamma=gamma, shaping_reward=data.batch['reward_shaping'])
+                                                            token_level_rewards=token_level_rewards, 
+                                                            eos_mask=response_mask, 
+                                                            gamma=gamma, 
+                                                            shaping_reward=data.batch['reward_shaping'])
         else:
             advantages, returns = rm_calculate_adv.compute_reinforce_plus_plus_outcome_advantage(
-                token_level_rewards=token_level_rewards, eos_mask=response_mask, gamma=gamma, shaping_reward=None)
+                                                            token_level_rewards=token_level_rewards, 
+                                                            eos_mask=response_mask, 
+                                                            gamma=gamma, 
+                                                            shaping_reward=None)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
         # print("adv:", data.batch['advantages'])
