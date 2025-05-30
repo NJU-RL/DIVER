@@ -51,6 +51,8 @@ python3 -m verl.rm_src.rm_main_ppo \
     data.max_prompt_length=1024 \
     data.max_response_length=8192 \
     reward_model.enable=True \
+    reward_model.add_reward_shaping=True\
+    reward_model.shaping_coef=1.0\
     reward_model.use_dynamic_bsz=True\
     reward_model.model.use_remove_padding=True \
     reward_model.micro_batch_size=4\
@@ -62,7 +64,7 @@ python3 -m verl.rm_src.rm_main_ppo \
     actor_rollout_ref.actor.ppo_micro_batch_size=4\
     actor_rollout_ref.actor.use_dynamic_bsz=True \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=16384 \
-    actor_rollout_ref.actor.use_kl_loss=True \
+    actor_rollout_ref.actor.use_kl_loss=False \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=1 \
@@ -82,7 +84,7 @@ python3 -m verl.rm_src.rm_main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='reward_shaping' \
-    trainer.experiment_name='rskd_0.8_ds' \
+    trainer.experiment_name='rskd_1.0_ds_nokl' \
     +trainer.val_before_train=True \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \

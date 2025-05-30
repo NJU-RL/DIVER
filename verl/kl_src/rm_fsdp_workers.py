@@ -161,6 +161,9 @@ class RewardShapingModelWorker(Worker):
         self.reward_module = self._build_model(config=self.config)
         torch.cuda.empty_cache()
 
+    """
+    output(teacher model logits): shape=(bsz, response_len, vacab_size)
+    """
     def _forward_micro_batch(self, micro_batch):
         from flash_attn.bert_padding import pad_input, unpad_input, index_first_axis, rearrange
         from verl.utils.ulysses import ulysses_pad_and_slice_inputs, gather_outpus_and_unpad

@@ -66,7 +66,7 @@ def compute_grpo_outcome_advantage(token_level_rewards: torch.Tensor,
                                    eos_mask: torch.Tensor,
                                    index: torch.Tensor,
                                    shaping_reward=None,
-                                   shaping_coef=0.0,
+                                   shaping_coef=0.3,
                                    epsilon: float = 1e-6,
                                    use_std: bool = True):
     """
