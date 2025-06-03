@@ -33,7 +33,7 @@ from verl.single_controller.base import Worker
 from verl.single_controller.ray import RayResourcePool, RayWorkerGroup, RayClassWithInitArgs
 from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.ppo import core_algos
-from verl.rm_src import rm_calculate_adv 
+from verl.kl_src import calculate_adv 
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
 from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
@@ -135,7 +135,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         attention_mask = data.batch['attention_mask']
         response_mask = attention_mask[:, -response_length:]
         token_level_rewards = data.batch['token_level_rewards']
-        advantages, returns = rm_calculate_adv.compute_gae_advantage_return(token_level_rewards=token_level_rewards,
+        advantages, returns = calculate_adv.compute_gae_advantage_return(token_level_rewards=token_level_rewards,
                                                                       values=values,
                                                                       eos_mask=response_mask,
                                                                       gamma=gamma,
@@ -150,7 +150,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         attention_mask = data.batch['attention_mask']
         response_mask = attention_mask[:, -response_length:]
         if add_reward_shaping:
-            advantages, returns = rm_calculate_adv.compute_grpo_outcome_advantage(
+            advantages, returns = calculate_adv.compute_grpo_outcome_advantage(
                                                         token_level_rewards=token_level_rewards,
                                                         shaping_reward=data.batch['reward_shaping'],
                                                         shaping_coef=shaping_coef,
@@ -158,7 +158,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
                                                         index=index,
                                                         use_std=grpo_use_std)
         else:
-            advantages, returns = rm_calculate_adv.compute_grpo_outcome_advantage(
+            advantages, returns = calculate_adv.compute_grpo_outcome_advantage(
                                                         token_level_rewards=token_level_rewards,
                                                         eos_mask=response_mask,
                                                         index=index,
@@ -172,7 +172,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         response_length = responses.size(-1)
         attention_mask = data.batch['attention_mask']
         response_mask = attention_mask[:, -response_length:]
-        advantages, returns = rm_calculate_adv.compute_reinforce_outcome_advantage(token_level_rewards=token_level_rewards,
+        advantages, returns = calculate_adv.compute_reinforce_outcome_advantage(token_level_rewards=token_level_rewards,
                                                                              eos_mask=response_mask,
                                                                              index=index)
         data.batch['advantages'] = advantages
@@ -184,13 +184,13 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         attention_mask = data.batch['attention_mask']
         response_mask = attention_mask[:, -response_length:]
         if add_reward_shaping:
-            advantages, returns = rm_calculate_adv.compute_reinforce_plus_plus_outcome_advantage(
+            advantages, returns = calculate_adv.compute_reinforce_plus_plus_outcome_advantage(
                                                             token_level_rewards=token_level_rewards, 
                                                             eos_mask=response_mask, 
                                                             gamma=gamma, 
                                                             shaping_reward=data.batch['reward_shaping'])
         else:
-            advantages, returns = rm_calculate_adv.compute_reinforce_plus_plus_outcome_advantage(
+            advantages, returns = calculate_adv.compute_reinforce_plus_plus_outcome_advantage(
                                                             token_level_rewards=token_level_rewards, 
                                                             eos_mask=response_mask, 
                                                             gamma=gamma, 

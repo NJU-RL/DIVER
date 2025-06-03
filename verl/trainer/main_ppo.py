@@ -25,7 +25,7 @@ def main(config):
     if not ray.is_initialized():
         # this is for local ray cluster
         ray.init(
-            num_cpus=64,
+            num_cpus=110,
             runtime_env={
                 'env_vars': {
                     'TOKENIZERS_PARALLELISM': 'true', 

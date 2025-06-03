@@ -159,12 +159,13 @@ class RewardShapingModelWorker(Worker):
         # This is used to import external_lib into the huggingface systems
         import_external_libs(self.config.model.get('external_lib', None))
         self.reward_module = self._build_model(config=self.config)
+        self.reward_module.eval()
         torch.cuda.empty_cache()
 
     """
     output(teacher model logits): shape=(bsz, response_len, vacab_size)
     """
-    def _forward_micro_batch(self, micro_batch):
+    def _forward_micro_batch(self, micro_batch, temperature=1.0):
         from flash_attn.bert_padding import pad_input, unpad_input, index_first_axis, rearrange
         from verl.utils.ulysses import ulysses_pad_and_slice_inputs, gather_outpus_and_unpad
 
@@ -174,13 +175,12 @@ class RewardShapingModelWorker(Worker):
             attention_mask = micro_batch['attention_mask']
             position_ids = micro_batch['position_ids']
             response_length = micro_batch['responses'].size(-1)
-            self.use_remove_padding = True
             if self.use_remove_padding:
                 input_ids_rmpad, indices, *_ = unpad_input(input_ids.unsqueeze(-1),
                                                            attention_mask)  # input_ids_rmpad (total_nnz, ...)
                 
                 input_ids_rmpad = input_ids_rmpad.transpose(0, 1)  # (1, total_nnz)
-                input_ids_rmpad_rolled = torch.roll(input_ids_rmpad, shifts=-1, dims=1)  # (1, total_nnz)
+                # input_ids_rmpad_rolled = torch.roll(input_ids_rmpad, shifts=-1, dims=1)  # (1, total_nnz)
 
                 # unpad the position_ids to align the rotary
                 position_ids_rmpad = index_first_axis(rearrange(position_ids.unsqueeze(-1), "b s ... -> (b s) ..."),
@@ -191,43 +191,48 @@ class RewardShapingModelWorker(Worker):
                     input_ids_rmpad, position_ids_rmpad, pad_size = ulysses_pad_and_slice_inputs(input_ids_rmpad, \
                                                                                                 position_ids_rmpad, \
                                                                                                 sp_size=self.ulysses_sequence_parallel_size)
-                    input_ids_rmpad_rolled, _, _ = ulysses_pad_and_slice_inputs(input_ids_rmpad_rolled, None,
-                                                                                self.ulysses_sequence_parallel_size)
-
+                    # input_ids_rmpad_rolled, _, _ = ulysses_pad_and_slice_inputs(input_ids_rmpad_rolled, None,
+                                                                                # self.ulysses_sequence_parallel_size)
+                print("#####micro_data:", micro_batch)
                 # only pass input_ids and position_ids to enable flash_attn_varlen
                 output = self.reward_module(input_ids=input_ids_rmpad,
                                             attention_mask=None,
                                             position_ids=position_ids_rmpad,
                                             use_cache=False)  # prevent model thinks we are generating
-            
-                softmax_logits = torch.softmax(output.logits, dim=-1) # (1, total_nnz, vacab_size)
-                reward_rmpad = torch.gather(softmax_logits,
-                                        dim=-1,
-                                        index=input_ids_rmpad_rolled.unsqueeze(-1)).squeeze(-1) # (1, total_nnz)
+                # print("#####logits:", output.logits.shape)
+                # logits = output.logits
+                # logits.div_(temperature)  # in-place
+                teacher_probs = torch.softmax(output.logits.div_(temperature), dim=-1)
+                # reward_rmpad = torch.gather(softmax_logits,
+                #                         dim=-1,
+                #                         index=input_ids_rmpad_rolled.unsqueeze(-1)).squeeze(-1) # (1, total_nnz)
                 # gather output if sp > 1
                 if self.ulysses_sequence_parallel_size > 1:
-                    reward_rmpad = gather_outpus_and_unpad(reward_rmpad, # w/o test
-                                                            gather_dim=0,
-                                                            unpad_dim=0,
-                                                            padding_size=pad_size)
+                    teacher_probs = gather_outpus_and_unpad(teacher_probs, # w/o test
+                                                           gather_dim=0,
+                                                           unpad_dim=0,
+                                                           padding_size=pad_size)
+                print("teacher_probs:", teacher_probs.shape)
                 # pad it back
-                rm_score = pad_input(reward_rmpad.squeeze(0).unsqueeze(-1), indices=indices, batch=batch_size, seqlen=seqlen).squeeze(-1) # (bsz, sqe_len)
-                rm_score = rm_score[:, -response_length-1:-1]
+                teacher_prob = pad_input(teacher_probs.squeeze(0), # (total_nnz, vocab_size)
+                                         indices=indices, batch=batch_size, 
+                                         seqlen=seqlen) # (bsz, sqe_len,vacab_size)
+                teacher_prob = teacher_prob[:, -response_length-1:-1]
 
             else:
                 output = self.reward_module(input_ids=input_ids,
                                             attention_mask=attention_mask,
                                             position_ids=position_ids,
                                             use_cache=False)
-                logits = output.logits 
-                softmax_logits = torch.softmax(logits, dim=-1)[:, -response_length - 1:-1]  # (bsz, response_len, vacab_sz)
-                rm_score = torch.gather(softmax_logits,
-                                        dim=-1,
-                                        index=micro_batch['responses'].unsqueeze(-1)).squeeze(-1) # (bsz, response_len)
+
+                logits = output.logits
+                logits.div_(temperature)  # in-place
+             
+                teacher_prob = torch.softmax(logits , dim=-1)[:, -response_length - 1:-1]  # (bsz, response_len, vacab_sz)
 
             # attention_mask.shape=(bsz, prompt_len+response_len)->(00000111,111100000000000)
-            rm_score = rm_score * attention_mask[:, -response_length-1:-1]
-            return rm_score
+            teacher_prob = teacher_prob * attention_mask[:, -response_length-1:-1].unsqueeze(-1)
+            return teacher_prob
 
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
