@@ -8,12 +8,12 @@ def calculate_similarity_matrix(group_rollouts, select_n):
     for i in range(n):
         for j in range(i+1, n):
             # calculate BLEU score
-            reference_i = [group_rollouts[i][0].split()]
-            candidate_j = group_rollouts[j][0].split()
+            reference_i = [group_rollouts[i].split()]
+            candidate_j = group_rollouts[j].split()
             bleu_i_j = sentence_bleu(reference_i, candidate_j)
             
-            reference_j = [group_rollouts[j][0].split()]
-            candidate_i = group_rollouts[i][0].split()
+            reference_j = [group_rollouts[j].split()]
+            candidate_i = group_rollouts[i].split()
             bleu_j_i = sentence_bleu(reference_j, candidate_i)
             
             # Similarity is bidirectional
@@ -26,6 +26,6 @@ def calculate_similarity_matrix(group_rollouts, select_n):
         return list(range(n))
     # Use the min-heap to find the smallest n elements and their indexes
     indices = heapq.nsmallest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
-    select_seqs = [group_rollouts[i][0] for i in indices]
+    select_seqs = [group_rollouts[i] for i in indices]
 
-    return indices, select_seqs
+    return np.array(indices), select_seqs

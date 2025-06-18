@@ -641,28 +641,26 @@ class RayPPOTrainer(object):
                             group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
                             idx, filter_str = calculate_similarity_matrix(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
                             filter_idx = np.hstack((filter_idx, idx+group_start))
-                        gen_batch_output = gen_batch_output.slice(filter_idx)
-                        # print("filter_idx:",filter_idx)
-                        # print("filter_gen_batch:",filter_gen_batch)
-                        # # filter_gen_batch_output = DataProto.from_single_dict({})
+                        print("filter_idx:",filter_idx)
+                        # filter_gen_batch_output = DataProto.from_single_dict({})
                        
-                        # for i in range(len(gen_batch.batch)): # train_bsz
-                        #     group_start = i * self.config.actor_rollout_ref.rollout.n_total
-                        #     group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
-                        #     print(f"#######{list(range(group_start,group_end))}")
-                        #     print(gen_batch_output[group_start:group_end])
-                        #     print("****str:",response_str[group_start:group_end])
-                        #     filter_idx, filter_str = calculate_similarity_matrix(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
-                        #     print(f"filter_str: {filter_str}")
-                        #     print(f"idx:{group_start+filter_idx}")
-                        #     if i < 1:
-                        #         filter_gen_batch_output = gen_batch_output.slice(group_start+filter_idx)
-                        #         print(f"filter_output:{filter_gen_batch_output}")
-                        #     else:
-                        #         # filter_gen_batch_output.batch_size = group_end+1
-                        #         filter_gen_batch_output = filter_gen_batch_output.concat([gen_batch_output.slice(group_start+filter_idx)])
+                        for i in range(len(gen_batch.batch)): # train_bsz
+                            group_start = i * self.config.actor_rollout_ref.rollout.n_total
+                            group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
+                            print(f"#######{list(range(group_start,group_end))}")
+                            print(gen_batch_output[group_start:group_end])
+                            print("****str:",response_str[group_start:group_end])
+                            filter_idx, filter_str = calculate_similarity_matrix(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
+                            print(f"filter_str: {filter_str}")
+                            print(f"idx:{group_start+filter_idx}")
+                            if i < 1:
+                                filter_gen_batch_output = gen_batch_output.slice(group_start+filter_idx)
+                                print(f"filter_output:{filter_gen_batch_output}")
+                            else:
+                                # filter_gen_batch_output.batch_size = group_end+1
+                                filter_gen_batch_output = filter_gen_batch_output.concat([gen_batch_output.slice(group_start+filter_idx)])
                                 
-                        # print(f"filter_output:{filter_gen_batch_output}")
+                        print(f"filter_output:{filter_gen_batch_output}")
                             
 
 

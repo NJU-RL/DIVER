@@ -29,7 +29,7 @@ python3 -m verl.div_src.main_rl \
     algorithm.adv_estimator=grpo \
     data.train_files=dataset/openr1.parquet \
     data.val_files=dataset/valid.all.parquet \
-    data.train_batch_size=32 \
+    data.train_batch_size=16 \
     data.val_batch_size=512 \
     data.max_prompt_length=1024 \
     data.max_response_length=16 \
