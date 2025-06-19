@@ -626,7 +626,7 @@ class RayPPOTrainer(object):
                         """计算reward,group内分类正确错误,筛选rollout.n个gen_batch_output"""
                         gene_non_tensor = batch.select(non_tensor_batch_keys=['reward_model','data_source'])
 
-                        gene_non_tensor.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(gen_batch.batch))], dtype=object)
+                        # gene_non_tensor.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(gen_batch.batch))], dtype=object)
                         gene_non_tensor = gene_non_tensor.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_total,interleave=True)
 
                         reward_tensor = self.reward_fn(gene_non_tensor.union(gen_batch_output))
@@ -636,10 +636,10 @@ class RayPPOTrainer(object):
                         for i in range(len(gen_batch.batch)):
                             group_start = i * self.config.actor_rollout_ref.rollout.n_total
                             group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
-                            idx, filter_str = calculate_similarity_matrix(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
+                            idx, _ = calculate_similarity_matrix(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
                             filter_idx = np.hstack((filter_idx, idx+group_start))
                         gen_batch_output = gen_batch_output.slice(filter_idx)
-                        
+                        reward_tensor = reward_tensor[filter_idx]
                     # This code matches a prompt ID with its N responses.
                     batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],dtype=object)
                 
@@ -659,7 +659,7 @@ class RayPPOTrainer(object):
                             reward_tensor = self.rm_wg.compute_rm_score(batch)
                             batch = batch.union(reward_tensor)
 
-                        reward_tensor = self.reward_fn(batch)
+                        # reward_tensor = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
 
                         # Rejection sampling based on rewards
