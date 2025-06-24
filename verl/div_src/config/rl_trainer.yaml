@@ -86,7 +86,8 @@ actor_rollout_ref:
     # number of responses (i.e. num sample times)
     n: 1 # > 1 for grpo
     n_val: 8
-    div_sample: Fasle # if diversity rollout
+    div_sample: False # if diversity rollout
+    div_type: low # low or high
     n_total: 2 # > rollout n for div
 
 critic:

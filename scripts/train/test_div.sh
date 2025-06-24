@@ -56,13 +56,14 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.n_total=16 \
     actor_rollout_ref.rollout.div_sample=True \
+    actor_rollout_ref.rollout.div_type='low' \
     actor_rollout_ref.rollout.n_val=1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.critic_warmup=0 \
     trainer.logger=['console,wandb'] \
     trainer.project_name='div' \
-    trainer.experiment_name='filter_high_div' \
+    trainer.experiment_name='embedding_low_div' \
     +trainer.val_before_train=True \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \

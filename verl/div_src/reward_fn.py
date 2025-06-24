@@ -23,7 +23,7 @@ class RewardManager():
 
     def __call__(self, data: DataProto):
         """We will expand this function gradually based on the available datasets"""
-
+        # print(f"union:{data}")
         # If there is rm score, we directly return rm score. Otherwise, we compute via rm_score_fn
         if 'rm_scores' in data.batch.keys():
             return data.batch['rm_scores']
@@ -53,12 +53,15 @@ class RewardManager():
             # decode
             from deepscaler.globals import THOUGHT_DELIMITER_START
             sequences_str = THOUGHT_DELIMITER_START + self.tokenizer.decode(valid_response_ids)
+            # print(f"i:{i}, sequences_str{sequences_str}")
 
             ground_truth = data_item.non_tensor_batch['reward_model']['ground_truth']
 
             # select rm_score
             data_source = data_item.non_tensor_batch['data_source']
             compute_score_fn = _select_rm_score_fn(data_source)
+            # print(f"solution_str:{[sequences_str]}")
+            # print(f"ground_truth:{[ground_truth]}")
             score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth)
             return i, score, valid_response_length
 

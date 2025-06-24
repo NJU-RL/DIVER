@@ -618,28 +618,42 @@ class RayPPOTrainer(object):
                 with _timer('step', timing_raw):
                     # generate a batch
                     with _timer('gen', timing_raw):
-                        # {}
                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
+                        # print("gen_batch_output:", gen_batch_output)
 
                     if self.config.actor_rollout_ref.rollout.div_sample:
-                        from verl.div_src.diversity_metric import calculate_similarity_matrix
+                        from verl.div_src.diversity_metric import calculate_div
                         """计算reward,group内分类正确错误,筛选rollout.n个gen_batch_output"""
                         gene_non_tensor = batch.select(non_tensor_batch_keys=['reward_model','data_source'])
 
                         # gene_non_tensor.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(gen_batch.batch))], dtype=object)
                         gene_non_tensor = gene_non_tensor.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_total,interleave=True)
-
+                        # print("gene_non_tensor:", gene_non_tensor)
                         reward_tensor = self.reward_fn(gene_non_tensor.union(gen_batch_output))
+                        
+                        
                         response_str = self.tokenizer.batch_decode(gen_batch_output.batch['responses'],skip_special_tokens=True)
-
+                        # print("response_str:", response_str[-4:])
                         filter_idx = np.array([],dtype=int)
                         for i in range(len(gen_batch.batch)):
                             group_start = i * self.config.actor_rollout_ref.rollout.n_total
                             group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
-                            idx, _ = calculate_similarity_matrix(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
+
+                            # correct sample
+                            
+
+                            idx, filter_str = calculate_div(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
                             filter_idx = np.hstack((filter_idx, idx+group_start))
                         gen_batch_output = gen_batch_output.slice(filter_idx)
                         reward_tensor = reward_tensor[filter_idx]
+                        # print(f"gene_non_tensor")
+                        # print(f"######### gene_non_tensor:{gene_non_tensor[filter_idx]}")
+                        # print(f'######### reward tensor: {reward_tensor.sum(-1)}')
+                        # print(f'######### filter_str:{filter_str}')
+                        # print(f'######### sum: {torch.sum(reward_tensor)}')
+                        # for i in range(len(reward_tensor)):
+                        #     # print(f'reward {i}: {reward_tensor[i]}')
+                        #     print(f'reward {i}: {torch.where(reward_tensor[i] == 1)[0]}')
                     # This code matches a prompt ID with its N responses.
                     batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],dtype=object)
                 

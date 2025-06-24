@@ -32,7 +32,7 @@ python3 -m verl.div_src.main_rl \
     data.train_batch_size=16 \
     data.val_batch_size=512 \
     data.max_prompt_length=1024 \
-    data.max_response_length=16 \
+    data.max_response_length=8192 \
     actor_rollout_ref.model.path=$MODEL_PATH  \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
@@ -56,6 +56,7 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.rollout.n=2 \
     actor_rollout_ref.rollout.n_total=4 \
     actor_rollout_ref.rollout.div_sample=True \
+    actor_rollout_ref.rollout.div_type='high' \
     actor_rollout_ref.rollout.n_val=1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.001 \
@@ -63,7 +64,7 @@ python3 -m verl.div_src.main_rl \
     trainer.logger=['console'] \
     trainer.project_name='reward_shaping' \
     trainer.experiment_name='teacher' \
-    +trainer.val_before_train=True \
+    +trainer.val_before_train=False \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=40 \
