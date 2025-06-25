@@ -95,6 +95,16 @@ def main_task(config):
     # - for code related prompt, we send to a sandbox if there are test cases
     # - finally, we combine all the rewards together
     # - The reward type depends on the tag of the data
+    if config.diversity_model.enable:
+        if config.diversity_model.strategy == 'fsdp':
+            from verl.div_src.diversity_worker import DiversityWorker
+        elif config.diversity_model.strategy == 'megatron':
+            from verl.workers.megatron_workers import DiversityWorker
+        else:
+            raise NotImplementedError
+        role_worker_mapping[Role.DiversityModel] = ray.remote(DiversityWorker)
+        mapping[Role.DiversityModel] = global_pool_id
+
     if config.reward_model.enable:
         if config.reward_model.strategy == 'fsdp':
             from verl.workers.fsdp_workers import RewardModelWorker

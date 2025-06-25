@@ -59,6 +59,7 @@ class Role(Enum):
     RefPolicy = 4
     RewardModel = 5
     ActorRolloutRef = 6
+    DiversityModel = 7
 
 
 @dataclass
@@ -343,6 +344,7 @@ class RayPPOTrainer(object):
         self.resource_pool_manager = resource_pool_manager
         self.use_reference_policy = Role.RefPolicy in role_worker_mapping
         self.use_rm = Role.RewardModel in role_worker_mapping
+        self.use_div = Role.DiversityModel in role_worker_mapping
         self.ray_worker_group_cls = ray_worker_group_cls
 
         # define KL control
@@ -515,7 +517,11 @@ class RayPPOTrainer(object):
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.RewardModel)
             rm_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.RewardModel], config=self.config.reward_model)
             self.resource_pool_to_cls[resource_pool]['rm'] = rm_cls
-
+        
+        if self.use_div:
+            resource_pool = self.resource_pool_manager.get_resource_pool(Role.DiversityModel)
+            div_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.DiversityModel], config=self.config.diversity_model)
+            self.resource_pool_to_cls[resource_pool]['div'] = div_cls
         # initialize WorkerGroup
         # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
         # you should not use `create_colocated_worker_cls`. Instead, directly pass different resource pool to different worker groups.
@@ -541,6 +547,10 @@ class RayPPOTrainer(object):
         if self.use_rm:
             self.rm_wg = all_wg['rm']
             self.rm_wg.init_model()
+
+        if self.use_div:
+            self.div_wg = all_wg['div']
+            self.div_wg.init_model()
 
         # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
         self.actor_rollout_wg = all_wg['actor_rollout']
@@ -622,8 +632,7 @@ class RayPPOTrainer(object):
                         # print("gen_batch_output:", gen_batch_output)
 
                     if self.config.actor_rollout_ref.rollout.div_sample:
-                        from verl.div_src.diversity_metric import calculate_div
-                        """计算reward,group内分类正确错误,筛选rollout.n个gen_batch_output"""
+                        # from verl.div_src.diversity_metric import calculate_div
                         gene_non_tensor = batch.select(non_tensor_batch_keys=['reward_model','data_source'])
 
                         # gene_non_tensor.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(gen_batch.batch))], dtype=object)
@@ -642,19 +651,11 @@ class RayPPOTrainer(object):
                             # correct sample
                             
 
-                            idx, filter_str = calculate_div(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
+                            idx, _ = self.div_wg.calculate_div(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
                             filter_idx = np.hstack((filter_idx, idx+group_start))
                         gen_batch_output = gen_batch_output.slice(filter_idx)
                         reward_tensor = reward_tensor[filter_idx]
-                        # print(f"gene_non_tensor")
-                        # print(f"######### gene_non_tensor:{gene_non_tensor[filter_idx]}")
-                        # print(f'######### reward tensor: {reward_tensor.sum(-1)}')
-                        # print(f'######### filter_str:{filter_str}')
-                        # print(f'######### sum: {torch.sum(reward_tensor)}')
-                        # for i in range(len(reward_tensor)):
-                        #     # print(f'reward {i}: {reward_tensor[i]}')
-                        #     print(f'reward {i}: {torch.where(reward_tensor[i] == 1)[0]}')
-                    # This code matches a prompt ID with its N responses.
+                        
                     batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],dtype=object)
                 
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)

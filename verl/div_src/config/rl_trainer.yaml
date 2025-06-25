@@ -143,6 +143,17 @@ reward_model:
   use_dynamic_bsz: ${critic.use_dynamic_bsz}
   forward_max_token_len_per_gpu: ${critic.forward_max_token_len_per_gpu}
 
+diversity_model:
+  enable: False
+  strategy: fsdp
+  model:
+    input_tokenizer: None
+    path: distiluse-base-multilingual-cased-v2
+    fsdp_config:
+        min_num_params: 0
+        param_offload: False
+        fsdp_size: -1
+
 algorithm:
   gamma: 1.0
   lam: 1.0
