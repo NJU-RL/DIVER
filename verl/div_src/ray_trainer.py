@@ -632,7 +632,7 @@ class RayPPOTrainer(object):
                         # print("gen_batch_output:", gen_batch_output)
 
                     if self.config.actor_rollout_ref.rollout.div_sample:
-                        # from verl.div_src.diversity_metric import calculate_div
+                        from verl.div_src.diversity_metric import calculate_div
                         gene_non_tensor = batch.select(non_tensor_batch_keys=['reward_model','data_source'])
 
                         # gene_non_tensor.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(gen_batch.batch))], dtype=object)
@@ -650,8 +650,7 @@ class RayPPOTrainer(object):
 
                             # correct sample
                             
-
-                            idx, _ = self.div_wg.calculate_div(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
+                            idx, _ = calculate_div(self.div_wg.diversity_module, response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
                             filter_idx = np.hstack((filter_idx, idx+group_start))
                         gen_batch_output = gen_batch_output.slice(filter_idx)
                         reward_tensor = reward_tensor[filter_idx]

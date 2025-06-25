@@ -12,7 +12,7 @@ from verl.utils.fs import copy_local_path_from_hdfs
 from verl.utils.fsdp_utils import get_fsdp_wrap_policy, init_fn, get_init_weight_context_manager
 from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
 from verl.utils.import_utils import import_external_libs
-from sentence_transformers import SentenceTransformer, util
+from sentence_transformers import SentenceTransformer
 import numpy as np
 import heapq
 
@@ -101,23 +101,23 @@ class DiversityWorker(Worker):
         with init_context(), warnings.catch_warnings():
             warnings.simplefilter("ignore")
             setattr(model_config, 'classifier_dropout', 0.)
-            diversity_module = SentenceTransformer(model_name_or_path=local_path)
-        auto_wrap_policy = get_fsdp_wrap_policy(module=diversity_module, config=self.config.model.fsdp_config)
+        diversity_module = SentenceTransformer(model_name_or_path=local_path).to(torch.cuda.current_device())
+        # auto_wrap_policy = get_fsdp_wrap_policy(module=diversity_module, config=self.config.model.fsdp_config)
 
-        fsdp_mesh = self.device_mesh
-        sharding_strategy = get_sharding_strategy(fsdp_mesh)
+        # fsdp_mesh = self.device_mesh
+        # sharding_strategy = get_sharding_strategy(fsdp_mesh)
 
-        diversity_module = FSDP(
-            diversity_module,
-            param_init_fn=init_fn,
-            use_orig_params=False,
-            auto_wrap_policy=auto_wrap_policy,
-            device_id=torch.cuda.current_device(),
-            sharding_strategy=sharding_strategy,  # zero3
-            sync_module_states=True,
-            cpu_offload=CPUOffload(offload_params=True),
-            forward_prefetch=False,
-            device_mesh=self.device_mesh)
+        # diversity_module = FSDP(
+        #     diversity_module,
+        #     param_init_fn=init_fn,
+        #     use_orig_params=False,
+        #     auto_wrap_policy=auto_wrap_policy,
+        #     device_id=torch.cuda.current_device(),
+        #     sharding_strategy=sharding_strategy,  # zero3
+        #     sync_module_states=True,
+        #     cpu_offload=CPUOffload(offload_params=True),
+        #     forward_prefetch=False,
+        #     device_mesh=self.device_mesh)
 
         return diversity_module
     
@@ -128,44 +128,3 @@ class DiversityWorker(Worker):
         self.diversity_module = self._build_model(config=self.config)
         torch.cuda.empty_cache()
     
-    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-    def calculate_div(self, group_rollouts, select_n, div_type='high'):
-        n = len(group_rollouts)
-        
-        if n <= 1 or select_n >= n:
-            indices = list(range(n))
-            return np.array(indices), group_rollouts
-        
-        
-        with torch.no_grad():
-            all_embeddings = self.diversity_module.encode(group_rollouts, convert_to_tensor=True)
-        
-        
-        similarity_matrix = np.zeros((n, n))
-    
-        for i in range(n):
-            for j in range(i+1, n):
-                similarity = util.pytorch_cos_sim(
-                    all_embeddings[i].unsqueeze(0), 
-                    all_embeddings[j].unsqueeze(0)
-                ).item()
-                
-                
-                similarity_matrix[i][j] = similarity
-                similarity_matrix[j][i] = similarity
-    
-        np.fill_diagonal(similarity_matrix, 1.0)
-        
-        avg_similarities = (np.sum(similarity_matrix, axis=1) - 1.0) / (n - 1)
-        
-        if div_type == 'high':
-            indices = heapq.nsmallest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
-        else:
-            indices = heapq.nlargest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
-        
-        select_seqs = [group_rollouts[i] for i in indices]
-        
-        self.diversity_module._handle.reshard(True)
-        torch.cuda.empty_cache()
-        
-        return np.array(indices), select_seqs
