@@ -66,6 +66,8 @@ class RewardManager():
         with ThreadPoolExecutor(max_workers=96) as executor:
             args = [(i, data[i], already_print_data_sources) for i in range(len(data))]
             results = list(executor.map(process_item, args))
+        
+        # print(f'results: {results}')
 
         # Fill reward tensor with results
         for i, score, valid_response_length in results:

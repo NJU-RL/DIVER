@@ -611,8 +611,6 @@ class RayPPOTrainer(object):
 
                 metrics = {}
                 timing_raw = {}
-                # print(f"###batch-keys:{batch.batch.keys()}")
-                print(f"###batch—data: {batch.batch}")
 
                 # pop those keys for generation
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
@@ -624,7 +622,7 @@ class RayPPOTrainer(object):
                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
 
                     if self.config.actor_rollout_ref.rollout.div_sample:
-                        from verl.div_src.diversity_metric import calculate_similarity_matrix
+                        from verl.div_src.diversity_metric_equation_acc import calculate_similarity_matrix
                         """计算reward,group内分类正确错误,筛选rollout.n个gen_batch_output"""
                         gene_non_tensor = batch.select(non_tensor_batch_keys=['reward_model','data_source'])
 
@@ -632,13 +630,35 @@ class RayPPOTrainer(object):
                         gene_non_tensor = gene_non_tensor.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_total,interleave=True)
 
                         reward_tensor = self.reward_fn(gene_non_tensor.union(gen_batch_output))
+                        # print(f'reward tensor: {reward_tensor.shape}')
+                        # print(f'sum: {torch.sum(reward_tensor)}')
+                        # for i in range(len(reward_tensor)):
+                        #     # print(f'reward {i}: {reward_tensor[i]}')
+                        #     print(f'reward {i}: {torch.where(reward_tensor[i] == 1)[0]}')
+                        #     if torch.sum(reward_tensor[i]) == 1:
+                        #         print('*' * 20)
+                        #         print(f'prompt {i}:')
+                        #         print(self.tokenizer.decode(gen_batch.batch['input_ids'][i]))
+
+                        #         print(f'response {i}:')
+                        #         print(self.tokenizer.decode(gen_batch_output.batch['responses'][i]))
+
+                        #         print(f'ground truth {i}:')
+                        #         print(batch['reward_model']['ground_truth'][i])
+                        reward_flag = []
+                        for i in range(len(reward_tensor)):
+                            reward_flag.append(torch.sum(reward_tensor[i]))
+
+                        # print(f'reward_flag: {reward_flag}')
+
+
                         response_str = self.tokenizer.batch_decode(gen_batch_output.batch['responses'],skip_special_tokens=True)
-                        print(len(response_str))
+
                         filter_idx = np.array([],dtype=int)
                         for i in range(len(gen_batch.batch)):
                             group_start = i * self.config.actor_rollout_ref.rollout.n_total
                             group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
-                            idx, filter_str = calculate_similarity_matrix(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
+                            idx, filter_str = calculate_similarity_matrix(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n, self.config.actor_rollout_ref.rollout.filter_high_div, reward_flag)
                             filter_idx = np.hstack((filter_idx, idx+group_start))
                         gen_batch_output = gen_batch_output.slice(filter_idx)
                         
@@ -663,6 +683,22 @@ class RayPPOTrainer(object):
 
                         reward_tensor = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
+
+                        # print(f'reward tensor: {reward_tensor.shape}')
+                        # print(f'sum: {torch.sum(reward_tensor)}')
+                        # for i in range(len(reward_tensor)):
+                        #     print(f'reward {i}: {torch.sum(reward_tensor[i])}')
+                            # print(f'reward {i}: {torch.where(reward_tensor[i] == 1)[0]}')
+                            # if torch.sum(reward_tensor[i]) == 1:
+                            #     print('*' * 20)
+                            #     print(f'prompt {i}:')
+                            #     print(self.tokenizer.decode(batch.batch['input_ids'][i], skip_special_tokens=True))
+
+                            #     print(f'response {i}:')
+                            #     print(self.tokenizer.decode(batch.batch['responses'][i], skip_special_tokens=True))
+
+                            #     print(f'ground truth {i}:')
+                            #     print(batch[i].non_tensor_batch['reward_model']['ground_truth'])
 
                         # Rejection sampling based on rewards
                         # Group rewards by uid

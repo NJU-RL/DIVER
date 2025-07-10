@@ -152,6 +152,18 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         advantages, returns = calculate_adv.compute_grpo_outcome_advantage(token_level_rewards=token_level_rewards,
                                                                         eos_mask=response_mask,
                                                                         index=index)
+        # print(f'token_level_rewards shape: {token_level_rewards.shape}')
+        # print(f'token_level_rewards: {token_level_rewards}')
+        # print(f'advantage shape: {advantages.shape}')
+        # for i in range(len(token_level_rewards)):
+        #     print(f'rewards {i}: {torch.where(token_level_rewards[i] == 1)[0]}')
+        # # print(f'advantage: {advantages}')
+        # for i in range(len(advantages)):
+        #     if torch.sum(advantages[i]) != 0:
+        #         print(f'advantage {i}: {torch.where(advantages[i] != 0)[0]}')
+        #         print(advantages[i])
+
+
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == 'reinforce_plus_plus':
@@ -622,21 +634,23 @@ class RayPPOTrainer(object):
                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
 
                     if self.config.actor_rollout_ref.rollout.div_sample:
-                        from verl.div_src.diversity_metric import calculate_similarity_matrix
+                        from verl.div_src.diversity_metric_equation import calculate_similarity_matrix
                         """计算reward,group内分类正确错误,筛选rollout.n个gen_batch_output"""
-                        gene_non_tensor = batch.select(non_tensor_batch_keys=['reward_model','data_source'])
+                        # gene_non_tensor = batch.select(non_tensor_batch_keys=['reward_model','data_source'])
 
-                        gene_non_tensor.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(gen_batch.batch))], dtype=object)
-                        gene_non_tensor = gene_non_tensor.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_total,interleave=True)
+                        # gene_non_tensor.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(gen_batch.batch))], dtype=object)
+                        # gene_non_tensor = gene_non_tensor.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_total,interleave=True)
 
-                        reward_tensor = self.reward_fn(gene_non_tensor.union(gen_batch_output))
+                        # reward_tensor = self.reward_fn(gene_non_tensor.union(gen_batch_output))
                         response_str = self.tokenizer.batch_decode(gen_batch_output.batch['responses'],skip_special_tokens=True)
 
                         filter_idx = np.array([],dtype=int)
                         for i in range(len(gen_batch.batch)):
                             group_start = i * self.config.actor_rollout_ref.rollout.n_total
                             group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
-                            idx, filter_str = calculate_similarity_matrix(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
+                            group = response_str[group_start:group_end]
+                            # print(f'group 0: {group[0]}')
+                            idx, filter_str = calculate_similarity_matrix(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n, self.config.actor_rollout_ref.rollout.filter_high_div)
                             filter_idx = np.hstack((filter_idx, idx+group_start))
                         gen_batch_output = gen_batch_output.slice(filter_idx)
                         

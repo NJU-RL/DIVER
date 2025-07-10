@@ -2,6 +2,8 @@ outputs/
 checkpoints/
 dataset/
 wandb/
+__pycache__/
+
 
 *.pdf
 

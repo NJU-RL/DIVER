@@ -2,7 +2,7 @@ import numpy as np
 import heapq
 from nltk.translate.bleu_score import sentence_bleu
 
-def calculate_similarity_matrix(group_rollouts, select_n):
+def calculate_similarity_matrix(group_rollouts, select_n, filter_high_div):
     n = len(group_rollouts)
     similarity_matrix = np.zeros((n, n))
     for i in range(n):
@@ -20,12 +20,17 @@ def calculate_similarity_matrix(group_rollouts, select_n):
             similarity = (bleu_i_j + bleu_j_i) / 2
             similarity_matrix[i][j] = similarity
             similarity_matrix[j][i] = similarity
+    
+    # print(f'sim matrix: {similarity_matrix}')
 
     avg_similarities = np.sum(similarity_matrix, axis=1) / (n-1)
     if select_n >= n:
         return list(range(n))
-    # Use the min-heap to find the smallest n elements and their indexes
-    indices = heapq.nsmallest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
+    if filter_high_div:
+        # Use the min-heap to find the smallest n elements and their indexes
+        indices = heapq.nsmallest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
+    else:
+        indices = heapq.nsmallest(select_n, range(len(avg_similarities)), key=lambda i: -avg_similarities[i])
     select_seqs = [group_rollouts[i] for i in indices]
 
     return np.array(indices), select_seqs

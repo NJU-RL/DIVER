@@ -94,7 +94,8 @@ class DataParallelPPOActor(BasePPOActor):
                 output = self.actor_module(input_ids=input_ids_rmpad,
                                            attention_mask=None,
                                            position_ids=position_ids_rmpad,
-                                           use_cache=False)  # prevent model thinks we are generating
+                                           use_cache=False,
+                                           output_hidden_states=True)  # prevent model thinks we are generating
                 logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
 
                 logits_rmpad.div_(temperature)
@@ -113,6 +114,9 @@ class DataParallelPPOActor(BasePPOActor):
                                                             gather_dim=0,
                                                             unpad_dim=0,
                                                             padding_size=pad_size)
+                
+                # print(f'unpad entropy: {entropy_rmpad.shape}')
+
                 # pad back to (bsz, seqlen)
                 full_entropy = pad_input(hidden_states=entropy_rmpad.unsqueeze(-1),
                                          indices=indices,
@@ -122,10 +126,31 @@ class DataParallelPPOActor(BasePPOActor):
                                            indices=indices,
                                            batch=batch_size,
                                            seqlen=seqlen)
+                
+                # print(f'full entropy: {full_entropy.shape}')
 
                 # only return response part:
                 entropy = full_entropy.squeeze(-1)[:, -response_length - 1:-1]  # (bsz, response_length)
                 log_probs = full_log_probs.squeeze(-1)[:, -response_length - 1:-1]  # (bsz, response_length)
+
+                # print(f'entropy: {entropy.shape}')
+
+                # print(f'len: {len(output.hidden_states)}')
+                # print(f'hidden state shape: {output.hidden_states[-1].shape}')
+
+                hidden_states_rmpad = output.hidden_states[-1].squeeze(0) # (total_nnz, hidden_dim) remove the first dimension
+
+                full_hidden_states = pad_input(
+                    hidden_states=hidden_states_rmpad,  # (total_nnz, hidden_dim)
+                    indices=indices,
+                    batch=batch_size,
+                    seqlen=seqlen
+                )
+                # print(f'full hidden states shape: {full_hidden_states.shape}')
+                hidden_states = full_hidden_states[:, -response_length - 1:-1, :]
+                # print(f'response hidden states shape: {hidden_states.shape}')
+
+
 
             else:  # not using rmpad and no ulysses sp
                 output = self.actor_module(input_ids=input_ids,
@@ -138,7 +163,7 @@ class DataParallelPPOActor(BasePPOActor):
                 log_probs = logprobs_from_logits(logits, micro_batch['responses'])
                 entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
 
-            return entropy, log_probs
+            return entropy, log_probs, hidden_states
 
     def _optimizer_step(self):
         assert self.config.grad_clip is not None
@@ -188,9 +213,11 @@ class DataParallelPPOActor(BasePPOActor):
         log_probs_lst = []
         for micro_batch in micro_batches:
             with torch.no_grad():
-                _, log_probs = self._forward_micro_batch(micro_batch, temperature=temperature)
+                _, log_probs, _ = self._forward_micro_batch(micro_batch, temperature=temperature)
             log_probs_lst.append(log_probs)
         log_probs = torch.concat(log_probs_lst, dim=0)
+
+        # print(f'log probs: {log_probs.shape}')
 
         if use_dynamic_bsz:
             indices = list(itertools.chain.from_iterable(indices))
@@ -199,6 +226,35 @@ class DataParallelPPOActor(BasePPOActor):
             log_probs = log_probs[revert_indices]
 
         return log_probs
+    
+    def disp_loss(self, hidden_states: torch.Tensor, tau: float = 1.0):
+        Z = hidden_states.mean(dim=1)  # (batch_size, hidden_dim)
+        Z = nn.functional.normalize(Z, p=2, dim=1)
+
+        sim_matrix = torch.mm(Z, Z.t())
+
+        D_matrix = 2 * (1 - sim_matrix)
+
+        D_matrix = D_matrix.triu(diagonal=1)
+        D = D_matrix[D_matrix > 0]
+
+        # print(f'D mat: {D_matrix}')
+
+        loss = -torch.log(torch.mean(torch.exp(-D/tau) + 1e-8))
+        
+        # compute pairwise distance
+        # Z_norm = (Z**2).sum(1).view(-1, 1)
+        # D_matrix = Z_norm + Z_norm.t() - 2.0 * torch.mm(Z, Z.t())
+        
+        # D_matrix = D_matrix.triu(diagonal=1)
+        # D = D_matrix[D_matrix > 0]
+        # print(f'D_mat: {D_matrix}')
+        
+        # loss = -torch.log(torch.mean(torch.exp(-D/tau)))
+
+        # print(f'loss: {loss}')
+        
+        return loss
 
     def update_policy(self, data: DataProto):
         # make sure we are in training mode
@@ -244,20 +300,30 @@ class DataParallelPPOActor(BasePPOActor):
                     advantages = data['advantages']
 
                     clip_ratio = self.config.clip_ratio
+                    clip_ratio_high = self.config.clip_ratio_high
                     entropy_coeff = self.config.entropy_coeff
 
-                    entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
+                    entropy, log_prob, hidden_states = self._forward_micro_batch(micro_batch=data, temperature=temperature)
+
+                    disp_loss = self.disp_loss(hidden_states)
+
+                    # print(f'disp_loss: {disp_loss}')
+                    # print(f'disp_loss grad: {disp_loss.requires_grad}')
 
                     pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
                                                                                 log_prob=log_prob,
                                                                                 advantages=advantages,
                                                                                 eos_mask=response_mask,
-                                                                                cliprange=clip_ratio)
+                                                                                cliprange=clip_ratio,
+                                                                                cliprangehigh=clip_ratio_high)
                     # compute entropy loss from entropy
                     entropy_loss = verl_F.masked_mean(entropy, response_mask)
 
+                    # print(f'pg loss: {pg_loss}')
+                    # print(f'pg loss grad: {pg_loss.requires_grad}')
+
                     # compute policy loss
-                    policy_loss = pg_loss - entropy_loss * entropy_coeff
+                    policy_loss = pg_loss - entropy_loss * entropy_coeff + 0.01 * disp_loss
 
                     if self.config.use_kl_loss:
                         ref_log_prob = data['ref_log_prob']
@@ -277,6 +343,7 @@ class DataParallelPPOActor(BasePPOActor):
                     data = {
                         'actor/entropy_loss': entropy_loss.detach().item(),
                         'actor/pg_loss': pg_loss.detach().item(),
+                        'actor/disp_loss': disp_loss.detach().item(),
                         'actor/pg_clipfrac': pg_clipfrac.detach().item(),
                         'actor/ppo_kl': ppo_kl.detach().item(),
                     }
