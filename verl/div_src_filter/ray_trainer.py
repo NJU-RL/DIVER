@@ -33,9 +33,11 @@ from verl.single_controller.base import Worker
 from verl.single_controller.ray import RayResourcePool, RayWorkerGroup, RayClassWithInitArgs
 from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.ppo import core_algos
-from verl.div_src import calculate_adv
+from verl.div_src_filter import calculate_adv
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 
+from sentence_transformers import SentenceTransformer,util
+import heapq
 
 WorkerType = Type[Worker]
 
@@ -59,6 +61,7 @@ class Role(Enum):
     RefPolicy = 4
     RewardModel = 5
     ActorRolloutRef = 6
+    DiversityModel = 7
 
 
 @dataclass
@@ -611,8 +614,6 @@ class RayPPOTrainer(object):
 
                 metrics = {}
                 timing_raw = {}
-                # print(f"###batch-keys:{batch.batch.keys()}")
-                print(f"###batch—data: {batch.batch}")
 
                 # pop those keys for generation
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
@@ -620,75 +621,43 @@ class RayPPOTrainer(object):
                 with _timer('step', timing_raw):
                     # generate a batch
                     with _timer('gen', timing_raw):
-                        # {}
                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
+                        print("gen_batch_output:", gen_batch_output)
 
                     if self.config.actor_rollout_ref.rollout.div_sample:
-                        from verl.div_src.diversity_metric import calculate_similarity_matrix
-                        """计算reward,group内分类正确错误,筛选rollout.n个gen_batch_output"""
+                        from verl.div_src_filter.diversity_metric import select_diverse_embeddings_batch
                         gene_non_tensor = batch.select(non_tensor_batch_keys=['reward_model','data_source'])
-                        print("**gen_batch.batch**:",gen_batch.batch, "len_batch:", len(gen_batch.batch))
-                        gene_non_tensor.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(gen_batch.batch))], dtype=object)
-                        # print(f"&&&&&&&&&&uid: {gene_non_tensor.non_tensor_batch['uid']}, shape:{gene_non_tensor.non_tensor_batch['uid'].shape}")
                         gene_non_tensor = gene_non_tensor.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_total,interleave=True)
-                        # print(f"########gene_non_tensor:{gene_non_tensor}")
                         reward_tensor = self.reward_fn(gene_non_tensor.union(gen_batch_output))
+                        
+                        
+                        # get response hidden_states (bsz, embedding_dim)
+                        # with torch.no_grad():
+                        print(f"******gene.shape*****:{gen_batch_output}")
+                        hidden_states = self.actor_rollout_wg.get_hidden_state(gen_batch_output)
+                            # outputs = self.actor_rollout_wg.actor(input_ids=gen_batch.batch['input_ids'],
+                            #                                              attention_mask=gen_batch.batch['attention_mask'],
+                            #                                              position_ids=gen_batch.batch['position_ids'],
+                            #                                              use_cache=False,
+                            #                                              output_hidden_states=True)
+                        print(f"******hidden_state.shape*****:{hidden_states}")
                         response_str = self.tokenizer.batch_decode(gen_batch_output.batch['responses'],skip_special_tokens=True)
-                        print(len(response_str))
+                        # print("response_str:", response_str[-4:])
                         filter_idx = np.array([],dtype=int)
                         for i in range(len(gen_batch.batch)):
                             group_start = i * self.config.actor_rollout_ref.rollout.n_total
                             group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
-                            idx, filter_str = calculate_similarity_matrix(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
+
+                            # correct sample                           
+                            idx, _ = select_diverse_embeddings_batch(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
                             filter_idx = np.hstack((filter_idx, idx+group_start))
-                        gen_batch_output = gen_batch_output.slice(filter_idx)
-                        # print("filter_idx:",filter_idx)
-                        # print("filter_gen_batch:",filter_gen_batch)
-                        # # filter_gen_batch_output = DataProto.from_single_dict({})
-                       
-                        # for i in range(len(gen_batch.batch)): # train_bsz
-                        #     group_start = i * self.config.actor_rollout_ref.rollout.n_total
-                        #     group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
-                        #     print(f"#######{list(range(group_start,group_end))}")
-                        #     print(gen_batch_output[group_start:group_end])
-                        #     print("****str:",response_str[group_start:group_end])
-                        #     filter_idx, filter_str = calculate_similarity_matrix(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
-                        #     print(f"filter_str: {filter_str}")
-                        #     print(f"idx:{group_start+filter_idx}")
-                        #     if i < 1:
-                        #         filter_gen_batch_output = gen_batch_output.slice(group_start+filter_idx)
-                        #         print(f"filter_output:{filter_gen_batch_output}")
-                        #     else:
-                        #         # filter_gen_batch_output.batch_size = group_end+1
-                        #         filter_gen_batch_output = filter_gen_batch_output.concat([gen_batch_output.slice(group_start+filter_idx)])
-                                
-                        # print(f"filter_output:{filter_gen_batch_output}")
-                            
-
-
-                        # uids = gene_non_tensor.non_tensor_batch['uid']
-                        # unique_uids = np.unique(uids)
-                        # for uid in unique_uids:
-                        #     uid_mask = uids == uid
-                        #     uid_rewards = reward_tensor[uid_mask].sum(-1)  # Sum rewards for each sequence
-                        #     print(f"&&&&uid_reward:{uid_rewards}, uid_mask:{uid_mask},uid:{uid}")
-                        #     uid_response_str = response_str[uid_mask]
-                        #     print(f"&&&&uid_response_str:{uid_response_str}, uid_mask:{uid_mask}")
-
-                        # print(f"########reward_tensor:{reward_tensor}")
-                        # print(f"########reward_tensor:{reward_tensor.shape}")
-
-                    # print("**batch.batch**:",batch.batch, "len_batch:", len(batch.batch))
-                    # This code matches a prompt ID with its N responses.
+                        # gen_batch_output = gen_batch_output.slice(filter_idx)
+                        reward_tensor = reward_tensor[filter_idx]
+                        
                     batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],dtype=object)
-                    # print("**batch.uid**:",batch.non_tensor_batch['uid'])
-                    # print(f"***gen_batch_output-keys:{gen_batch_output.batch.keys()}")
-                    # print(f"***gen_batch—keys1: {gen_batch_output.non_tensor_batch.keys}")
-                    # print(f"***gen_batch_output—data: {gen_batch_output}")
+                
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
-                    # print(f"***batch-keys:{batch.batch.keys()}")
-                    # print(f"***batch—keys1: {batch.non_tensor_batch.keys()}")
-                    # print(f"***batch—data: {batch.batch}")
+                
                     batch = batch.union(gen_batch_output)
 
                     # compute values
@@ -703,7 +672,7 @@ class RayPPOTrainer(object):
                             reward_tensor = self.rm_wg.compute_rm_score(batch)
                             batch = batch.union(reward_tensor)
 
-                        reward_tensor = self.reward_fn(batch)
+                        # reward_tensor = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
 
                         # Rejection sampling based on rewards
@@ -822,3 +791,5 @@ class RayPPOTrainer(object):
                         pprint(f'Final validation metrics: {val_metrics}')
                         logger.log(data=val_metrics, step=self.global_steps)
                     return
+
+    

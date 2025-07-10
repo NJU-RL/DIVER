@@ -41,8 +41,8 @@ python3 -m verl.div_src.main_rl \
     data.val_batch_size=512 \
     data.max_prompt_length=1024 \
     data.max_response_length=64 \
-    actor_rollout_ref.diversity.enable=True \
-    actor_rollout_ref.diversity.model.path=$DIV_MODEL_PATH \
+    actor_rollout_ref.div_model.enable=True \
+    actor_rollout_ref.div_model.path=$DIV_MODEL_PATH \
     actor_rollout_ref.model.path=$MODEL_PATH  \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
@@ -66,7 +66,7 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.rollout.n=2 \
     actor_rollout_ref.rollout.n_total=4 \
     actor_rollout_ref.rollout.div_sample=True \
-    actor_rollout_ref.rollout.div_type='high' \
+    actor_rollout_ref.rollout.div_type='low' \
     actor_rollout_ref.rollout.n_val=1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.001 \

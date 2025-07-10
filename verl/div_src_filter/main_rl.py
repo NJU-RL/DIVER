@@ -14,8 +14,8 @@
 """
 Note that we don't combine the main with ray_trainer as ray_trainer is used by other main.
 """
-from verl.div_src.ray_trainer import RayPPOTrainer
-from verl.div_src.reward_fn import RewardManager
+from verl.div_src_filter.ray_trainer import RayPPOTrainer
+from verl.div_src_filter.reward_fn import RewardManager
 import ray
 import hydra
 
@@ -58,7 +58,7 @@ def main_task(config):
     # define worker classes
     if config.actor_rollout_ref.actor.strategy == 'fsdp':
         assert config.actor_rollout_ref.actor.strategy == config.critic.strategy
-        from verl.div_src.ac_fsdp_workers import ActorRolloutRefWorker, CriticWorker
+        from verl.div_src_filter.ac_fsdp_workers import ActorRolloutRefWorker, CriticWorker
         from verl.single_controller.ray import RayWorkerGroup
         ray_worker_group_cls = RayWorkerGroup
 
@@ -71,7 +71,7 @@ def main_task(config):
     else:
         raise NotImplementedError
 
-    from verl.div_src.ray_trainer import ResourcePoolManager, Role
+    from verl.div_src_filter.ray_trainer import ResourcePoolManager, Role
 
     role_worker_mapping = {
         Role.ActorRollout: ray.remote(ActorRolloutRefWorker),
@@ -106,10 +106,6 @@ def main_task(config):
         role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
         mapping[Role.RewardModel] = global_pool_id
 
-    if config.actor_rollout_ref.diversity.enable:
-        from verl.div_src.diversity_worker import DiversityWorker
-        role_worker_mapping[Role.DiversityModel] = ray.remote(DiversityWorker)
-        mapping[Role.DiversityModel] = global_pool_id
 
     reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0)
 

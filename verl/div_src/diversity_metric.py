@@ -65,48 +65,48 @@ def calculate_similarity_matrix(group_rollouts, select_n, div_type='high'):
 #     select_seqs = [group_rollouts[i] for i in indices]
     
 #     return np.array(indices), select_seqs
-import torch
-from sentence_transformers import util
+# import torch
+# from sentence_transformers import util
 
-def calculate_div(diversity_module, group_rollouts, select_n, div_type='high'):
-        n = len(group_rollouts)
+# def calculate_div(diversity_module, group_rollouts, select_n, div_type='high'):
+#         n = len(group_rollouts)
         
-        if n <= 1 or select_n >= n:
-            indices = list(range(n))
-            return np.array(indices), group_rollouts
-        
-        
-        
-        all_embeddings = diversity_module.encode(group_rollouts, convert_to_tensor=True)
+#         if n <= 1 or select_n >= n:
+#             indices = list(range(n))
+#             return np.array(indices), group_rollouts
         
         
-        similarity_matrix = np.zeros((n, n))
+        
+#         all_embeddings = diversity_module.encode(group_rollouts, convert_to_tensor=True)
+        
+        
+#         similarity_matrix = np.zeros((n, n))
     
-        for i in range(n):
-            for j in range(i+1, n):
-                similarity = util.pytorch_cos_sim(
-                    all_embeddings[i].unsqueeze(0), 
-                    all_embeddings[j].unsqueeze(0)
-                ).item()
+#         for i in range(n):
+#             for j in range(i+1, n):
+#                 similarity = util.pytorch_cos_sim(
+#                     all_embeddings[i].unsqueeze(0), 
+#                     all_embeddings[j].unsqueeze(0)
+#                 ).item()
                 
                 
-                similarity_matrix[i][j] = similarity
-                similarity_matrix[j][i] = similarity
+#                 similarity_matrix[i][j] = similarity
+#                 similarity_matrix[j][i] = similarity
     
-        np.fill_diagonal(similarity_matrix, 1.0)
+#         np.fill_diagonal(similarity_matrix, 1.0)
         
-        avg_similarities = (np.sum(similarity_matrix, axis=1) - 1.0) / (n - 1)
+#         avg_similarities = (np.sum(similarity_matrix, axis=1) - 1.0) / (n - 1)
         
-        if div_type == 'high':
-            indices = heapq.nsmallest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
-        else:
-            indices = heapq.nlargest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
+#         if div_type == 'high':
+#             indices = heapq.nsmallest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
+#         else:
+#             indices = heapq.nlargest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
         
-        select_seqs = [group_rollouts[i] for i in indices]
+#         select_seqs = [group_rollouts[i] for i in indices]
         
-        # self.diversity_module._handle.reshard(True)
-        torch.cuda.empty_cache()
-        print(f"***********{np.array(indices)}, {select_seqs}")
+#         # self.diversity_module._handle.reshard(True)
+#         torch.cuda.empty_cache()
+#         print(f"***********{np.array(indices)}, {select_seqs}")
         
-        return np.array(indices), select_seqs
+#         return np.array(indices), select_seqs
 

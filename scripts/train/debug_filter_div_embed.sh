@@ -13,10 +13,6 @@ while [[ $# -gt 0 ]]; do
             MODEL_PATH="$2"
             shift 2
             ;;
-        --div_model)
-            DIV_MODEL_PATH="$2"
-            shift 2
-            ;;
         *)
             break
             ;;
@@ -28,12 +24,8 @@ if [ -z "$MODEL_PATH" ]; then
     MODEL_PATH="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 fi
 
-if [ -z "$RM_MODEL_PATH" ]; then
-    DIV_MODEL_PATH="sentence-transformers/distiluse-base-multilingual-cased-v2"
-fi
-
 # Train over a single node, 8 A100-80GB GPUs.
-python3 -m verl.div_src.main_rl \
+python3 -m verl.div_src_filter.main_rl \
     algorithm.adv_estimator=grpo \
     data.train_files=dataset/openr1.parquet \
     data.val_files=dataset/valid.all.parquet \
@@ -41,8 +33,6 @@ python3 -m verl.div_src.main_rl \
     data.val_batch_size=512 \
     data.max_prompt_length=1024 \
     data.max_response_length=64 \
-    actor_rollout_ref.diversity.enable=True \
-    actor_rollout_ref.diversity.model.path=$DIV_MODEL_PATH \
     actor_rollout_ref.model.path=$MODEL_PATH  \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
@@ -73,7 +63,7 @@ python3 -m verl.div_src.main_rl \
     trainer.critic_warmup=0 \
     trainer.logger=['console'] \
     trainer.project_name='div' \
-    trainer.experiment_name='embedding_low_div' \
+    trainer.experiment_name='embedding_high_div' \
     +trainer.val_before_train=False \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \

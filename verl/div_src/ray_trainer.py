@@ -36,6 +36,8 @@ from verl.trainer.ppo import core_algos
 from verl.div_src import calculate_adv
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 
+from sentence_transformers import SentenceTransformer,util
+import heapq
 
 WorkerType = Type[Worker]
 
@@ -517,11 +519,12 @@ class RayPPOTrainer(object):
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.RewardModel)
             rm_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.RewardModel], config=self.config.reward_model)
             self.resource_pool_to_cls[resource_pool]['rm'] = rm_cls
-        
+
         if self.use_div:
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.DiversityModel)
-            div_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.DiversityModel], config=self.config.diversity_model)
+            div_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.DiversityModel], config=self.config.actor_rollout_ref.diversity)
             self.resource_pool_to_cls[resource_pool]['div'] = div_cls
+        
         # initialize WorkerGroup
         # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
         # you should not use `create_colocated_worker_cls`. Instead, directly pass different resource pool to different worker groups.
@@ -632,7 +635,7 @@ class RayPPOTrainer(object):
                         # print("gen_batch_output:", gen_batch_output)
 
                     if self.config.actor_rollout_ref.rollout.div_sample:
-                        from verl.div_src.diversity_metric import calculate_div
+                        # from verl.div_src.diversity_metric import calculate_div
                         gene_non_tensor = batch.select(non_tensor_batch_keys=['reward_model','data_source'])
 
                         # gene_non_tensor.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(gen_batch.batch))], dtype=object)
@@ -649,8 +652,9 @@ class RayPPOTrainer(object):
                             group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
 
                             # correct sample
-                            
-                            idx, _ = calculate_div(self.div_wg.diversity_module, response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
+                            print(f"output_idx:{self.div_wg.calculate_div(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)}")
+                           
+                            idx, _ = self.div_wg.calculate_div(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
                             filter_idx = np.hstack((filter_idx, idx+group_start))
                         gen_batch_output = gen_batch_output.slice(filter_idx)
                         reward_tensor = reward_tensor[filter_idx]
@@ -792,3 +796,42 @@ class RayPPOTrainer(object):
                         pprint(f'Final validation metrics: {val_metrics}')
                         logger.log(data=val_metrics, step=self.global_steps)
                     return
+
+    # def calculate_div(self, group_rollouts, select_n, div_type='high'):
+    #     n = len(group_rollouts)
+        
+    #     if n <= 1 or select_n >= n:
+    #         indices = list(range(n))
+    #         return np.array(indices), group_rollouts
+    #     self.div_model = self.div_model.to("cuda:0")
+    #     all_embeddings = self.div_model.encode(group_rollouts, convert_to_tensor=True)
+    #     print("embeding_device:", all_embeddings.device)
+        
+        
+    #     similarity_matrix = np.zeros((n, n))
+    
+    #     for i in range(n):
+    #         for j in range(i+1, n):
+    #             similarity = util.pytorch_cos_sim(
+    #                 all_embeddings[i].unsqueeze(0), 
+    #                 all_embeddings[j].unsqueeze(0)
+    #             ).item()
+                
+                
+    #             similarity_matrix[i][j] = similarity
+    #             similarity_matrix[j][i] = similarity
+    
+    #     np.fill_diagonal(similarity_matrix, 1.0)
+        
+    #     avg_similarities = (np.sum(similarity_matrix, axis=1) - 1.0) / (n - 1)
+        
+    #     if div_type == 'high':
+    #         indices = heapq.nsmallest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
+    #     else:
+    #         indices = heapq.nlargest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
+        
+    #     select_seqs = [group_rollouts[i] for i in indices]
+        
+    #     # self.diversity_module._handle.reshard(True)
+    #     torch.cuda.empty_cache()        
+    #     return np.array(indices), select_seqs

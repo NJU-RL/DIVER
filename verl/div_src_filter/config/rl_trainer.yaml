@@ -14,15 +14,6 @@ data:
 
 actor_rollout_ref:
   hybrid_engine: True
-  diversity:
-    enable: False
-    model:
-      input_tokenizer: None
-      path: distiluse-base-multilingual-cased-v2
-      fsdp_config:
-        min_num_params: 0
-        param_offload: False
-        fsdp_size: -1
   model:
     path: ~/models/deepseek-llm-7b-chat
     external_lib: null
