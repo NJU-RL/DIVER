@@ -91,10 +91,22 @@ class DataParallelPPOActor(BasePPOActor):
                 input_ids_rmpad_rolled = input_ids_rmpad_rolled.squeeze(0)  # ((total_nnz / sp) + pad)
 
                 # only pass input_ids and position_ids to enable flash_attn_varlen
-                output = self.actor_module(input_ids=input_ids_rmpad,
-                                           attention_mask=None,
-                                           position_ids=position_ids_rmpad,
-                                           use_cache=False)  # prevent model thinks we are generating
+                if self.config.use_div:
+                    output = self.actor_module(input_ids=input_ids_rmpad,
+                                               attention_mask=None,
+                                               position_ids=position_ids_rmpad,
+                                               use_cache=False,
+                                               output_hidden_states=True)
+                    # print(f'len: {len(output.hidden_states)}')
+                    # print(f'hidden state shape: {output.hidden_states[-1].shape}')
+                    hidden_states_rmpad = output.hidden_states[-1].squeeze(0) # (total_nnz, hidden_dim)
+                    
+
+                else:
+                    output = self.actor_module(input_ids=input_ids_rmpad,
+                                               attention_mask=None,
+                                               position_ids=position_ids_rmpad,
+                                               use_cache=False)  # prevent model thinks we are generating
                 logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
 
                 logits_rmpad.div_(temperature)
@@ -113,7 +125,22 @@ class DataParallelPPOActor(BasePPOActor):
                                                             gather_dim=0,
                                                             unpad_dim=0,
                                                             padding_size=pad_size)
+                    if self.config.use_div:
+                        full_hidden_states = gather_outpus_and_unpad(hidden_states=hidden_states_rmpad,
+                                                                     gather_dim=0,
+                                                                     unpad_dim=0,
+                                                                     padding_size=pad_size)
+
                 # pad back to (bsz, seqlen)
+                if self.config.use_div:
+                    full_hidden_states = pad_input(hidden_states=hidden_states_rmpad,
+                                                indices=indices,
+                                                batch=batch_size,
+                                                seqlen=seqlen)
+                    last_indices = torch.clamp(attention_mask[:,-response_length:].sum(dim=1)-1, min=0)
+                    batch_indices = torch.arange(batch_size, device=full_hidden_states.device)
+                    last_hidden_states = full_hidden_states[:,-response_length:][batch_indices, last_indices] # (bsz, hidden_dim)
+                    
                 full_entropy = pad_input(hidden_states=entropy_rmpad.unsqueeze(-1),
                                          indices=indices,
                                          batch=batch_size,
@@ -122,23 +149,35 @@ class DataParallelPPOActor(BasePPOActor):
                                            indices=indices,
                                            batch=batch_size,
                                            seqlen=seqlen)
-
+                
                 # only return response part:
                 entropy = full_entropy.squeeze(-1)[:, -response_length - 1:-1]  # (bsz, response_length)
                 log_probs = full_log_probs.squeeze(-1)[:, -response_length - 1:-1]  # (bsz, response_length)
+                # print(f"last_hidden_states:{last_hidden_states}")
 
             else:  # not using rmpad and no ulysses sp
-                output = self.actor_module(input_ids=input_ids,
-                                           attention_mask=attention_mask,
-                                           position_ids=position_ids,
-                                           use_cache=False)  # prevent model thinks we are generating
+                if self.config.use_div:
+                    output = self.actor_module(input_ids=input_ids,
+                                               attention_mask=attention_mask,
+                                               position_ids=position_ids,
+                                               output_hidden_states=True,
+                                               use_cache=False)
+                    hidden_states = output.hidden_states[-1].squeeze(0)
+                    last_indices = torch.clamp(attention_mask[:,-response_length:].sum(dim=1)-2, min=0)
+                    batch_indices = torch.arange(batch_size, device=hidden_states.device)
+                    last_hidden_states = hidden_states[:,-response_length:][batch_indices, last_indices]
+                else:
+                    output = self.actor_module(input_ids=input_ids,
+                                               attention_mask=attention_mask,
+                                               position_ids=position_ids,
+                                               use_cache=False)  # prevent model thinks we are generating
                 logits = output.logits
                 logits.div_(temperature)
                 logits = logits[:, -response_length - 1:-1]  # (bsz, response_length)
                 log_probs = logprobs_from_logits(logits, micro_batch['responses'])
                 entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
 
-            return entropy, log_probs
+            return entropy, log_probs, last_hidden_states
 
     def _optimizer_step(self):
         assert self.config.grad_clip is not None
@@ -150,18 +189,6 @@ class DataParallelPPOActor(BasePPOActor):
         self.actor_optimizer.step()
         return grad_norm
     
-    def get_hidden_state(self, gene_batch: DataProto):
-        # output = self.actor_module(input_ids=input_ids_rmpad,
-        #                            attention_mask=None,
-        #                            position_ids=position_ids_rmpad,
-        #                            use_cache=False)  # prevent model thinks we are generating
-        # logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
-        outputs = self.actor_module(input_ids=gene_batch.batch['input_ids'],
-                                    attention_mask=gene_batch.batch['attention_mask'],
-                                    position_ids=gene_batch.batch['position_ids'],
-                                    use_cache=False,
-                                    output_hidden_states=True)
-        return outputs.hidden_states
 
     def compute_log_prob(self, data: DataProto) -> torch.Tensor:
         """Compute the log probability of the responses given input_ids, attention_mask and position_ids
@@ -201,7 +228,7 @@ class DataParallelPPOActor(BasePPOActor):
         log_probs_lst = []
         for micro_batch in micro_batches:
             with torch.no_grad():
-                _, log_probs = self._forward_micro_batch(micro_batch, temperature=temperature)
+                _, log_probs, _ = self._forward_micro_batch(micro_batch, temperature=temperature)
             log_probs_lst.append(log_probs)
         log_probs = torch.concat(log_probs_lst, dim=0)
 
@@ -212,6 +239,15 @@ class DataParallelPPOActor(BasePPOActor):
             log_probs = log_probs[revert_indices]
 
         return log_probs
+    
+    def disp_loss(self, hidden_states: torch.Tensor, tau: float = 1.0):
+        """
+        Args: 
+            hidden_states: tensor of shape [batch_size, hidden_dim]
+        """
+        D = torch.pdist(hidden_states.float(), p=2).pow(2)
+        loss = -torch.log(torch.mean(torch.exp(-D/tau) + 1e-8))  
+        return loss
 
     def update_policy(self, data: DataProto):
         # make sure we are in training mode
@@ -258,8 +294,10 @@ class DataParallelPPOActor(BasePPOActor):
 
                     clip_ratio = self.config.clip_ratio
                     entropy_coeff = self.config.entropy_coeff
+                    div_coeff  = self.config.div_coeff
 
-                    entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
+                    entropy, log_prob, hidden_states = self._forward_micro_batch(micro_batch=data, temperature=temperature)
+                    disp_loss = self.disp_loss(hidden_states)
 
                     pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
                                                                                 log_prob=log_prob,
@@ -270,7 +308,8 @@ class DataParallelPPOActor(BasePPOActor):
                     entropy_loss = verl_F.masked_mean(entropy, response_mask)
 
                     # compute policy loss
-                    policy_loss = pg_loss - entropy_loss * entropy_coeff
+                    policy_loss = pg_loss - entropy_loss * entropy_coeff + div_coeff * disp_loss
+                    print(f"disp_loss:{disp_loss}; pg_loss:{pg_loss}")
 
                     if self.config.use_kl_loss:
                         ref_log_prob = data['ref_log_prob']
@@ -292,6 +331,7 @@ class DataParallelPPOActor(BasePPOActor):
                         'actor/pg_loss': pg_loss.detach().item(),
                         'actor/pg_clipfrac': pg_clipfrac.detach().item(),
                         'actor/ppo_kl': ppo_kl.detach().item(),
+                        'actor/disp_loss': disp_loss.detach().item(),
                     }
                     append_to_dict(metrics, data)
 

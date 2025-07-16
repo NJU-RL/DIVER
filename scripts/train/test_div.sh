@@ -13,10 +13,6 @@ while [[ $# -gt 0 ]]; do
             MODEL_PATH="$2"
             shift 2
             ;;
-        --div_model)
-            DIV_MODEL_PATH="$2"
-            shift 2
-            ;;
         *)
             break
             ;;
@@ -28,10 +24,6 @@ if [ -z "$MODEL_PATH" ]; then
     MODEL_PATH="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 fi
 
-if [ -z "$RM_MODEL_PATH" ]; then
-    DIV_MODEL_PATH="sentence-transformers/distiluse-base-multilingual-cased-v2"
-fi
-
 # Train over a single node, 8 A100-80GB GPUs.
 python3 -m verl.div_src.main_rl \
     algorithm.adv_estimator=grpo \
@@ -41,8 +33,6 @@ python3 -m verl.div_src.main_rl \
     data.val_batch_size=512 \
     data.max_prompt_length=1024 \
     data.max_response_length=8192 \
-    diversity_model.enable=True \
-    diversity_model.model.path=$DIV_MODEL_PATH \
     actor_rollout_ref.model.path=$MODEL_PATH  \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
@@ -58,22 +48,21 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.grad_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.temperature=1.0 \
     actor_rollout_ref.rollout.val_temperature=0.6 \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.85 \
     actor_rollout_ref.rollout.n=8 \
-    actor_rollout_ref.rollout.n_total=16 \
-    actor_rollout_ref.rollout.div_sample=True \
-    actor_rollout_ref.rollout.div_type='low' \
     actor_rollout_ref.rollout.n_val=1 \
+    actor_rollout_ref.actor.use_div=True \
+    actor_rollout_ref.actor.div_coeff=0.01 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.critic_warmup=0 \
-    trainer.logger=['console'] \
+    trainer.logger=['console','wandb'] \
     trainer.project_name='div' \
-    trainer.experiment_name='embedding_low_div' \
+    trainer.experiment_name='cl' \
     +trainer.val_before_train=False \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \

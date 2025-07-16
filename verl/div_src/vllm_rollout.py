@@ -125,8 +125,8 @@ class vLLMRollout(BaseRollout):
             if hasattr(SamplingParams(), str(k)):
                 kwargs[k] = config.get(k)
 
-        if self.config.div_sample:  # diversity sample for train
-            kwargs['n'] = self.config.n_total
+        # if self.config.div_sample:  # diversity sample for train
+        #     kwargs['n'] = self.config.n_total
 
         print(f"kwargs: {kwargs}")
         
@@ -225,13 +225,13 @@ class vLLMRollout(BaseRollout):
                         log_probs, self.config.response_length, self.pad_token_id)
                 # Handle multiple samples per prompt
                 if self.config.n > 1 and do_sample:
-                    repeat_n = self.config.n_total if self.config.div_sample else self.config.n
-                    idx = idx.repeat_interleave(repeat_n, dim=0)
+                    # repeat_n = self.config.n_total if self.config.div_sample else self.config.n
+                    idx = idx.repeat_interleave(self.config.n, dim=0)
                     attention_mask = attention_mask.repeat_interleave(
-                        repeat_n, dim=0)
+                        self.config.n, dim=0)
                     position_ids = position_ids.repeat_interleave(
-                        repeat_n, dim=0)
-                    batch_size = batch_size * repeat_n
+                        self.config.n, dim=0)
+                    batch_size = batch_size * self.config.n
                 
                 # Concatenate prompt and response
                 seq = torch.cat([idx, response], dim=-1)

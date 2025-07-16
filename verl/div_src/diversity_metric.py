@@ -37,76 +37,81 @@ def calculate_similarity_matrix(group_rollouts, select_n, div_type='high'):
 
     return np.array(indices), select_seqs
 
-################ sentence-embedding metric#################
-# from sentence_transformers import SentenceTransformer, util
+import torch
+import torch.nn.functional as F
 
-# model = SentenceTransformer('distiluse-base-multilingual-cased-v1')
-
-# def calculate_div(group_rollouts, select_n, div_type='high'):
-#     n = len(group_rollouts)
-#     similarity_matrix = np.zeros((n, n))
-#     for i in range(n):
-#         for j in range(i+1, n):
-#             embedding1 = model.encode(group_rollouts[i], convert_to_tensor=True)
-#             embedding2 = model.encode(group_rollouts[j], convert_to_tensor=True)
-#             similarity = util.pytorch_cos_sim(embedding1, embedding2)
-#             similarity_matrix[i][j] = similarity
-#             similarity_matrix[j][i] = similarity
-#     avg_similarities = np.sum(similarity_matrix, axis=1) / (n-1)
-#     if select_n >= n:
-#         return list(range(n))
-
-#     if div_type == 'high':
-#         # Use the min-heap to find the smallest n elements and their indexes
-#         indices = heapq.nsmallest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
-#     else:
-#         indices = heapq.nlargest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
-
-#     select_seqs = [group_rollouts[i] for i in indices]
+def select_diverse_embeddings(embeddings, select_n, div_type='high'):
+    """    
+    args:
+        embeddings: (n_rollout, embedding_dim)
+        select_n: The number of samples to be selected
+        div_type: 'high' is the selection of the most diverse, 'low' is the selection of the most similar
+        
+    returns:
+        tensor, The index containing the selected samples
+    """
+    n_rollout = embeddings.shape[0]
     
-#     return np.array(indices), select_seqs
-# import torch
-# from sentence_transformers import util
-
-# def calculate_div(diversity_module, group_rollouts, select_n, div_type='high'):
-#         n = len(group_rollouts)
-        
-#         if n <= 1 or select_n >= n:
-#             indices = list(range(n))
-#             return np.array(indices), group_rollouts
-        
-        
-        
-#         all_embeddings = diversity_module.encode(group_rollouts, convert_to_tensor=True)
-        
-        
-#         similarity_matrix = np.zeros((n, n))
+    if n_rollout <= 1 or select_n >= n_rollout:
+        return torch.arange(n_rollout, device=embeddings.device)
     
-#         for i in range(n):
-#             for j in range(i+1, n):
-#                 similarity = util.pytorch_cos_sim(
-#                     all_embeddings[i].unsqueeze(0), 
-#                     all_embeddings[j].unsqueeze(0)
-#                 ).item()
-                
-                
-#                 similarity_matrix[i][j] = similarity
-#                 similarity_matrix[j][i] = similarity
-    
-#         np.fill_diagonal(similarity_matrix, 1.0)
-        
-#         avg_similarities = (np.sum(similarity_matrix, axis=1) - 1.0) / (n - 1)
-        
-#         if div_type == 'high':
-#             indices = heapq.nsmallest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
-#         else:
-#             indices = heapq.nlargest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
-        
-#         select_seqs = [group_rollouts[i] for i in indices]
-        
-#         # self.diversity_module._handle.reshard(True)
-#         torch.cuda.empty_cache()
-#         print(f"***********{np.array(indices)}, {select_seqs}")
-        
-#         return np.array(indices), select_seqs
 
+    normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
+    
+    similarity_matrix = torch.mm(normalized_embeddings, normalized_embeddings.t())
+    
+    similarity_matrix = torch.clamp(similarity_matrix, -1.0, 1.0)
+    
+
+    mask = torch.ones_like(similarity_matrix) - torch.eye(n_rollout, device=similarity_matrix.device)
+    masked_sim = similarity_matrix * mask
+    
+    # Calculate the average similarity
+    avg_similarities = masked_sim.sum(dim=1) / (n_rollout - 1)
+    
+    if div_type == 'high':
+        _, indices = torch.topk(avg_similarities, k=select_n, largest=False)
+    else:
+        _, indices = torch.topk(avg_similarities, k=select_n, largest=True)
+    
+    return indices
+
+
+def select_diverse_embeddings_batch(embeddings, select_n, div_type='high'):
+    """    
+    args:
+        embeddings: (bsz, n_rollout, embedding_dim)
+        select_n: The number of samples to be selected
+        div_type: 'high' is the selection of the most diverse, 'low' is the selection of the most similar
+        
+    returns:
+        tensor, The indices containing the selected samples with shape (bsz, select_n)
+    """
+    bsz, n_rollout, embedding_dim = embeddings.shape
+    
+    if n_rollout <= 1 or select_n >= n_rollout:
+        return torch.arange(n_rollout, device=embeddings.device).unsqueeze(0).expand(bsz, n_rollout)
+    
+    # L2
+    normalized_embeddings = F.normalize(embeddings, p=2, dim=2)  # (bsz, n_rollout, embedding_dim)
+    
+    # bmm: batch matrix multiplication
+    similarity_matrix = torch.bmm(normalized_embeddings, normalized_embeddings.transpose(1, 2))  # (bsz, n_rollout, n_rollout)
+    
+    similarity_matrix = torch.clamp(similarity_matrix, -1.0, 1.0)
+    
+    # exclude diagonal elements
+    eye_mask = torch.eye(n_rollout, device=embeddings.device).unsqueeze(0).expand(bsz, -1, -1)
+    mask = torch.ones_like(similarity_matrix) - eye_mask
+    
+    masked_sim = similarity_matrix * mask
+    
+    # Calculate the average similarity
+    avg_similarities = masked_sim.sum(dim=2) / (n_rollout - 1)  # (bsz, n_rollout)
+    
+    if div_type == 'high':
+        _, indices = torch.topk(avg_similarities, k=select_n, largest=False, dim=1)
+    else:
+        _, indices = torch.topk(avg_similarities, k=select_n, largest=True, dim=1)
+    
+    return indices  # (bsz, select_n)

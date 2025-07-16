@@ -310,7 +310,8 @@ class ActorRolloutRefWorker(Worker):
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def init_model(self):
-        from verl.workers.actor import DataParallelPPOActor
+        # from verl.workers.actor import DataParallelPPOActor
+        from verl.div_src.dp_actor import DataParallelPPOActor
         # This is used to import external_lib into the huggingface systems
         import_external_libs(self.config.model.get('external_lib', None))
 
@@ -352,6 +353,7 @@ class ActorRolloutRefWorker(Worker):
             OmegaConf.set_struct(self.config.actor, True)
             with open_dict(self.config.actor):
                 self.config.actor.use_remove_padding = use_remove_padding
+                
             self.actor = DataParallelPPOActor(config=self.config.actor,
                                               actor_module=self.actor_module_fsdp,
                                               actor_optimizer=self.actor_optimizer)
@@ -371,6 +373,7 @@ class ActorRolloutRefWorker(Worker):
             OmegaConf.set_struct(self.config.ref, True)
             with open_dict(self.config.ref):
                 self.config.ref.use_remove_padding = use_remove_padding
+                self.config.ref.use_div = self.config.actor.get('use_div', False)
             self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
 
         if self._is_actor:
@@ -426,7 +429,39 @@ class ActorRolloutRefWorker(Worker):
             offload_fsdp_optimizer(optimizer=self.actor_optimizer)
         torch.cuda.empty_cache()
         return output
+    
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    def get_hidden_state(self, gene_batch:DataProto):
+        """
+        Args:
+            gene.batch(DataProto): a DataProto containing keys
 
+                ``input_ids``: tensor of shape [batch_size, sequence_length]. torch.int64. Note that input_ids is the
+                concatenation of prompt and response. Note that ``sequence_length = prompt_length + response_length``.
+
+                ``attention_mask``: tensor of shape [batch_size, sequence_length]. torch.int64.
+
+                ``position_ids``: tensor of shape [batch_size, sequence_length]. torch.int64.
+
+                ``prompts``:  tensor of shape [batch_size, prompt_length]. torch.int64.
+
+                ``responses``:  tensor of shape [batch_size, response_length]. torch.int64.
+
+        Returns:
+            torch.Tensor: the log_prob tensor
+        """
+        pass
+        # gene_batch = gene_batch.to('cuda')
+        # gene_batch.batch = gene_batch.batch.to('cuda')
+        # print("&&&&&&&&&:", gene_batch)
+        # outputs = self.actor.get(input_ids=gene_batch.batch['input_ids'],
+        #                                   attention_mask=gene_batch.batch['attention_mask'],
+        #                                   position_ids=gene_batch.batch['position_ids'],
+        #                                   use_cache=False,
+        #                                   output_hidden_states=True)
+        # return outputs.hidden_states
+        # return self.actor.get_hidden_state(gene_batch)
+        
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def generate_sequences(self, prompts: DataProto):
         prompts = prompts.to('cuda')

@@ -14,15 +14,6 @@ data:
 
 actor_rollout_ref:
   hybrid_engine: True
-  diversity:
-    enable: False
-    model:
-      input_tokenizer: None
-      path: distiluse-base-multilingual-cased-v2
-      fsdp_config:
-        min_num_params: 0
-        param_offload: False
-        fsdp_size: -1
   model:
     path: ~/models/deepseek-llm-7b-chat
     external_lib: null
@@ -30,6 +21,8 @@ actor_rollout_ref:
     enable_gradient_checkpointing: True
     use_remove_padding: False
   actor:
+    use_div: False # if diversity rollout
+    div_coeff: 0.01
     strategy: fsdp  # This is for backward-compatibility
     ppo_mini_batch_size: 256
     ppo_micro_batch_size: 64
@@ -95,9 +88,8 @@ actor_rollout_ref:
     # number of responses (i.e. num sample times)
     n: 1 # > 1 for grpo
     n_val: 8
-    div_sample: False # if diversity rollout
-    div_type: low # low or high
-    n_total: 2 # > rollout n for div
+    # div_type: low # low or high
+    # n_total: 2 # > rollout n for div
 
 critic:
   strategy: fsdp

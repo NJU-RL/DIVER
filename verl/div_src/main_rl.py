@@ -106,10 +106,6 @@ def main_task(config):
         role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
         mapping[Role.RewardModel] = global_pool_id
 
-    if config.actor_rollout_ref.diversity.enable:
-        from verl.div_src.diversity_worker import DiversityWorker
-        role_worker_mapping[Role.DiversityModel] = ray.remote(DiversityWorker)
-        mapping[Role.DiversityModel] = global_pool_id
 
     reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0)
 

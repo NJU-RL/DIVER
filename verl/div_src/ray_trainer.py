@@ -346,7 +346,6 @@ class RayPPOTrainer(object):
         self.resource_pool_manager = resource_pool_manager
         self.use_reference_policy = Role.RefPolicy in role_worker_mapping
         self.use_rm = Role.RewardModel in role_worker_mapping
-        self.use_div = Role.DiversityModel in role_worker_mapping
         self.ray_worker_group_cls = ray_worker_group_cls
 
         # define KL control
@@ -520,11 +519,6 @@ class RayPPOTrainer(object):
             rm_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.RewardModel], config=self.config.reward_model)
             self.resource_pool_to_cls[resource_pool]['rm'] = rm_cls
 
-        if self.use_div:
-            resource_pool = self.resource_pool_manager.get_resource_pool(Role.DiversityModel)
-            div_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.DiversityModel], config=self.config.actor_rollout_ref.diversity)
-            self.resource_pool_to_cls[resource_pool]['div'] = div_cls
-        
         # initialize WorkerGroup
         # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
         # you should not use `create_colocated_worker_cls`. Instead, directly pass different resource pool to different worker groups.
@@ -550,10 +544,6 @@ class RayPPOTrainer(object):
         if self.use_rm:
             self.rm_wg = all_wg['rm']
             self.rm_wg.init_model()
-
-        if self.use_div:
-            self.div_wg = all_wg['div']
-            self.div_wg.init_model()
 
         # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
         self.actor_rollout_wg = all_wg['actor_rollout']
@@ -634,30 +624,35 @@ class RayPPOTrainer(object):
                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
                         # print("gen_batch_output:", gen_batch_output)
 
-                    if self.config.actor_rollout_ref.rollout.div_sample:
-                        # from verl.div_src.diversity_metric import calculate_div
-                        gene_non_tensor = batch.select(non_tensor_batch_keys=['reward_model','data_source'])
-
-                        # gene_non_tensor.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(gen_batch.batch))], dtype=object)
-                        gene_non_tensor = gene_non_tensor.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_total,interleave=True)
-                        # print("gene_non_tensor:", gene_non_tensor)
-                        reward_tensor = self.reward_fn(gene_non_tensor.union(gen_batch_output))
+                    # if self.config.actor_rollout_ref.rollout.div_sample:
+                    #     from verl.div_src.diversity_metric import select_diverse_embeddings_batch
+                    #     gene_non_tensor = batch.select(non_tensor_batch_keys=['reward_model','data_source'])
+                    #     gene_non_tensor = gene_non_tensor.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_total,interleave=True)
+                    #     reward_tensor = self.reward_fn(gene_non_tensor.union(gen_batch_output))
                         
                         
-                        response_str = self.tokenizer.batch_decode(gen_batch_output.batch['responses'],skip_special_tokens=True)
-                        # print("response_str:", response_str[-4:])
-                        filter_idx = np.array([],dtype=int)
-                        for i in range(len(gen_batch.batch)):
-                            group_start = i * self.config.actor_rollout_ref.rollout.n_total
-                            group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
+                    #     # get response hidden_states (bsz, embedding_dim)
+                    #     # with torch.no_grad():
+                    #     print(f"******gene.shape*****:{gen_batch_output}")
+                    #     hidden_states = self.actor_rollout_wg.get_hidden_state(gen_batch_output)
+                    #         # outputs = self.actor_rollout_wg.actor(input_ids=gen_batch.batch['input_ids'],
+                    #         #                                              attention_mask=gen_batch.batch['attention_mask'],
+                    #         #                                              position_ids=gen_batch.batch['position_ids'],
+                    #         #                                              use_cache=False,
+                    #         #                                              output_hidden_states=True)
+                    #     print(f"******hidden_state.shape*****:{hidden_states}")
+                    #     response_str = self.tokenizer.batch_decode(gen_batch_output.batch['responses'],skip_special_tokens=True)
+                    #     # print("response_str:", response_str[-4:])
+                    #     filter_idx = np.array([],dtype=int)
+                    #     for i in range(len(gen_batch.batch)):
+                    #         group_start = i * self.config.actor_rollout_ref.rollout.n_total
+                    #         group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
 
-                            # correct sample
-                            print(f"output_idx:{self.div_wg.calculate_div(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)}")
-                           
-                            idx, _ = self.div_wg.calculate_div(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
-                            filter_idx = np.hstack((filter_idx, idx+group_start))
-                        gen_batch_output = gen_batch_output.slice(filter_idx)
-                        reward_tensor = reward_tensor[filter_idx]
+                    #         # correct sample                           
+                    #         idx, _ = select_diverse_embeddings_batch(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
+                    #         filter_idx = np.hstack((filter_idx, idx+group_start))
+                    #     # gen_batch_output = gen_batch_output.slice(filter_idx)
+                    #     reward_tensor = reward_tensor[filter_idx]
                         
                     batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],dtype=object)
                 
@@ -677,7 +672,7 @@ class RayPPOTrainer(object):
                             reward_tensor = self.rm_wg.compute_rm_score(batch)
                             batch = batch.union(reward_tensor)
 
-                        # reward_tensor = self.reward_fn(batch)
+                        reward_tensor = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
 
                         # Rejection sampling based on rewards
@@ -797,41 +792,4 @@ class RayPPOTrainer(object):
                         logger.log(data=val_metrics, step=self.global_steps)
                     return
 
-    # def calculate_div(self, group_rollouts, select_n, div_type='high'):
-    #     n = len(group_rollouts)
-        
-    #     if n <= 1 or select_n >= n:
-    #         indices = list(range(n))
-    #         return np.array(indices), group_rollouts
-    #     self.div_model = self.div_model.to("cuda:0")
-    #     all_embeddings = self.div_model.encode(group_rollouts, convert_to_tensor=True)
-    #     print("embeding_device:", all_embeddings.device)
-        
-        
-    #     similarity_matrix = np.zeros((n, n))
     
-    #     for i in range(n):
-    #         for j in range(i+1, n):
-    #             similarity = util.pytorch_cos_sim(
-    #                 all_embeddings[i].unsqueeze(0), 
-    #                 all_embeddings[j].unsqueeze(0)
-    #             ).item()
-                
-                
-    #             similarity_matrix[i][j] = similarity
-    #             similarity_matrix[j][i] = similarity
-    
-    #     np.fill_diagonal(similarity_matrix, 1.0)
-        
-    #     avg_similarities = (np.sum(similarity_matrix, axis=1) - 1.0) / (n - 1)
-        
-    #     if div_type == 'high':
-    #         indices = heapq.nsmallest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
-    #     else:
-    #         indices = heapq.nlargest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
-        
-    #     select_seqs = [group_rollouts[i] for i in indices]
-        
-    #     # self.diversity_module._handle.reshard(True)
-    #     torch.cuda.empty_cache()        
-    #     return np.array(indices), select_seqs
