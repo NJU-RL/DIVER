@@ -240,13 +240,30 @@ class DataParallelPPOActor(BasePPOActor):
 
         return log_probs
     
+    # def disp_loss(self, hidden_states: torch.Tensor, tau: float = 1.0):
+    #     """
+    #     Args: 
+    #         hidden_states: tensor of shape [batch_size, hidden_dim]
+    #     """
+    #     D = torch.pdist(hidden_states.float(), p=2).pow(2)
+    #     loss = torch.log(torch.mean(torch.exp(-D/tau) + 1e-8))  
+    #     return loss
+    
     def disp_loss(self, hidden_states: torch.Tensor, tau: float = 1.0):
-        """
-        Args: 
-            hidden_states: tensor of shape [batch_size, hidden_dim]
-        """
-        D = torch.pdist(hidden_states.float(), p=2).pow(2)
-        loss = -torch.log(torch.mean(torch.exp(-D/tau) + 1e-8))  
+        # Z = hidden_states.mean(dim=1)  # (batch_size, hidden_dim)
+        hidden_states = nn.functional.normalize(hidden_states, p=2, dim=1)
+
+        sim_matrix = torch.mm(hidden_states, hidden_states.t())
+
+        D_matrix = 2 * (1 - sim_matrix)
+
+        D_matrix = D_matrix.triu(diagonal=1)
+        D = D_matrix[D_matrix > 0]
+
+        # print(f'D mat: {D_matrix}')
+
+        loss = torch.log(torch.mean(torch.exp(-D/tau) + 1e-8))
+        
         return loss
 
     def update_policy(self, data: DataProto):
