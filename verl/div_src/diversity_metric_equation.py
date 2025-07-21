@@ -44,6 +44,20 @@ def calculate_unique_diversity(formulas, current_index):
     
     return D_eq
 
+def calculate_avg_equ_diversity(group_rollouts):
+    formulas = []
+    for i in range(len(group_rollouts)):
+        formulas.append(extract_formulas(group_rollouts[i]))
+    
+    diversity = []
+
+    for i in range(len(formulas)):
+        diversity.append(calculate_unique_diversity(formulas, i))
+    
+
+    return sum(diversity)/len(diversity)
+
+
 def calculate_similarity_matrix(group_rollouts, select_n, filter_high_div):
     n = len(group_rollouts)
     formulas = []

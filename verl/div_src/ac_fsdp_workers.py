@@ -474,11 +474,12 @@ class ActorRolloutRefWorker(Worker):
         # perform recompute log_prob
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data)
-            old_log_probs = self.actor.compute_log_prob(data=data)
+            old_log_probs, old_hidden_states = self.actor.compute_log_prob(data=data)
             data.batch['old_log_probs'] = old_log_probs
+            data.batch['old_hidden_states'] = old_hidden_states
             data = self.ulysses_sharding_manager.postprocess_data(data)
 
-        output = data.select(batch_keys=['old_log_probs'])
+        output = data.select(batch_keys=['old_log_probs', 'old_hidden_states'])
         output = output.to('cpu')
 
         # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
@@ -502,7 +503,7 @@ class ActorRolloutRefWorker(Worker):
         data.meta_info['use_dynamic_bsz'] = self.config.ref.log_prob_use_dynamic_bsz
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data)
-            output = self.ref_policy.compute_log_prob(data=data)
+            output, _ = self.ref_policy.compute_log_prob(data=data)
             output = DataProto.from_dict(tensors={'ref_log_prob': output})
             output = self.ulysses_sharding_manager.postprocess_data(output)
 

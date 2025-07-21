@@ -17,6 +17,7 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import os
+from unittest import result
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -24,9 +25,13 @@ from enum import Enum
 from pprint import pprint
 from typing import Type, Dict
 
+# from networkx import edge_betweenness
+from ninja import expand
 import numpy as np
 from codetiming import Timer
 from omegaconf import OmegaConf, open_dict
+from sklearn.calibration import Hidden
+from zmq import device
 from verl import DataProto
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto, DataProtoItem
 from verl.single_controller.base import Worker
@@ -89,6 +94,43 @@ class ResourcePoolManager:
 
 import torch
 from verl.utils.torch_functional import masked_mean
+
+def group_hidden_states(hidden_states: torch.tensor, rollout_n=8):
+    """
+    reorder the hidden states by group: (bsz, hidden_dim) -> (bsz, rollout_n, hidden_dim)
+    """
+    bsz, hidden_dim = hidden_states.shape
+    assert bsz % rollout_n == 0, f"bsz ({bsz}) must be divisible by rollout_n ({rollout_n})"
+
+    group_num = bsz // rollout_n
+    grouped = hidden_states.reshape(group_num, rollout_n, hidden_dim)
+
+    # result = torch.zeros(bsz, rollout_n, hidden_dim, device=hidden_states.device)
+
+    indices = torch.zeros(rollout_n, rollout_n, dtype=torch.long, device=hidden_states.device)
+    for i in range(rollout_n):
+        row = torch.cat([
+            torch.tensor([i], device=hidden_states.device),
+            torch.arange(0, i, device=hidden_states.device),
+            torch.arange(i+1, rollout_n, device=hidden_states.device)
+        ])
+        indices[i] = row
+    
+    batch_indices = indices.unsqueeze(0).expand(group_num, -1, -1)
+
+    expanded = grouped.unsqueeze(1).expand(-1, rollout_n, -1, -1)
+
+    gather_indices = batch_indices.unsqueeze(-1).expand(-1, -1, -1, hidden_dim)
+
+    gathered = torch.gather(expanded, dim=2, index=gather_indices)
+
+    # print(f'gathered shape: {gathered.shape}')
+
+    result = gathered.reshape(bsz, rollout_n, hidden_dim)
+
+    # print(f'results: {result.shape}')
+
+    return result
 
 
 def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, kl_penalty='kl'):
@@ -633,6 +675,20 @@ class RayPPOTrainer(object):
                         # {}
                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
 
+                    from verl.div_src.diversity_metric_equation import calculate_avg_equ_diversity
+                    response_str = self.tokenizer.batch_decode(gen_batch_output.batch['responses'],skip_special_tokens=True)
+
+                    avg_diversity = []
+
+                    for i in range(len(gen_batch.batch)):
+                        group_start = i * self.config.actor_rollout_ref.rollout.n_total
+                        group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
+                        group = response_str[group_start:group_end]
+                        avg_diversity.append(calculate_avg_equ_diversity(group))
+                    
+                    # print(f'avg_diversity: {np.mean(avg_diversity)}')
+                    
+
                     if self.config.actor_rollout_ref.rollout.div_sample:
                         from verl.div_src.diversity_metric_equation import calculate_similarity_matrix
                         """计算reward,group内分类正确错误,筛选rollout.n个gen_batch_output"""
@@ -658,8 +714,40 @@ class RayPPOTrainer(object):
                     batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],dtype=object)
                 
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
-                
                     batch = batch.union(gen_batch_output)
+
+                    
+                    # import torch
+                    # import uuid
+                    
+                    # # 创建uid列表
+                    # uids = [str(uuid.uuid4()) for _ in range(len(batch.batch))]
+
+                    # if 'non_tensor_batch' not in batch.__dict__ or batch.non_tensor_batch is None:
+                    #     batch.non_tensor_batch = {}
+                    # batch.non_tensor_batch['uid'] = np.array(uids, dtype=object)
+                                
+                    # # # 如果batch.batch中已有tensor格式的数据，我们可以参考它的设备和类型
+                    # # device = next(iter(batch.batch.values())).device if batch.batch else torch.device('cpu')
+                    
+                    # # 将uid作为一个批处理键添加到batch中
+                    # # 这里我们使用字符串张量，但需要确保你的DataProto支持这种类型
+                    # # 如果DataProto只支持数字张量，你可能需要将UUID转换为数字ID
+                    # # 下面假设DataProto支持字符串数组作为批处理键
+                    # # batch.batch['uid'] = np.array(uids, dtype=object)
+                    # batch.batch['uid'] = torch.tensor([uid for uid in uids], dtype=torch.long)
+                    
+                    # # 重复批处理以匹配responses的数量
+                    # batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                
+                    # batch = batch.union(gen_batch_output)
+
+                    # print(f'original batch uid:')
+                    # for i in range(len(batch.non_tensor_batch['uid'])):
+                    #     print(f'non tensor: {batch.non_tensor_batch["uid"][i]}')
+                    #     print(f'batch: {batch.batch["uid"][i]}')
+                    # print('*' * 20)
+                    
 
                     # compute values
                     if self.use_critic:
@@ -724,6 +812,9 @@ class RayPPOTrainer(object):
                         with _timer('old_log_prob', timing_raw):
                             old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
                             batch = batch.union(old_log_prob)
+                        print(f'old hidden states: {batch.batch["old_hidden_states"].shape}')
+                        batch.batch['old_hidden_states'] = group_hidden_states(batch.batch['old_hidden_states'])
+                        print(f'grouped old hidden states: {batch.batch["old_hidden_states"].shape}')
 
                         if self.use_reference_policy:
                             # compute reference log_prob
@@ -743,7 +834,7 @@ class RayPPOTrainer(object):
                     # balance the number of valid tokens on each dp rank.
                     # Note that this breaks the order of data inside the batch.
                     # Please take care when you implement group based adv computation such as GRPO and rloo
-                    self._balance_batch(batch, metrics=metrics)
+                    # self._balance_batch(batch, metrics=metrics)
 
                     # compute global_valid tokens
                     batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
@@ -757,6 +848,41 @@ class RayPPOTrainer(object):
 
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
+                        # ===========
+                        # from transformers import AutoModelForCausalLM, AutoTokenizer
+                        # model_path = "/mnt/petrelfs/share_data/huzican/Qwen2.5-7B-orz-tok"
+                        # tokenizer = AutoTokenizer.from_pretrained(model_path)
+
+                        # output_collection = []
+
+                        # for i in range(0, 8):
+                        #     # 找到第一个非掩码位置（值为1的位置）
+                        #     attention_mask = batch.batch['attention_mask'][i]
+                        #     non_masked_indices = [j for j, mask in enumerate(attention_mask) if mask == 1]
+                            
+                        #     if non_masked_indices:
+                        #         start_idx = non_masked_indices[0]  # 第一个非掩码的位置
+                        #         # 从非掩码位置截取最多200个token
+                        #         input_ids_slice = batch.batch['input_ids'][i][start_idx+50:start_idx+200]
+                        #         input_seq = tokenizer.decode(input_ids_slice, skip_special_tokens=True)
+                        #         output_text = f"从非掩码位置开始的前200个token: {input_seq}"
+                        #     else:
+                        #         # 如果全部被掩码，则输出原始序列的前200个token
+                        #         input_seq = tokenizer.decode(batch.batch['input_ids'][i][:200], skip_special_tokens=True)
+                        #         output_text = f"序列全部被掩码 显示前200个token: {input_seq}"
+                            
+                        #     # 存储索引和对应的输出文本
+                        #     output_collection.append((i, output_text))
+                        
+                        # # 按索引排序
+                        # output_collection.sort(key=lambda x: x[0])
+                        
+                        # # 按顺序打印
+                        # for idx, text in output_collection:
+                        #     print(f'========= {idx} =========')
+                        #     print(text)
+                        # ===========
+
                         # update actor
                         with _timer('update_actor', timing_raw):
                             actor_output = self.actor_rollout_wg.update_actor(batch)
@@ -768,7 +894,12 @@ class RayPPOTrainer(object):
                         self.global_steps % self.config.trainer.test_freq == 0:
                         with _timer('testing', timing_raw):
                             val_metrics: dict = self._validate()
+                        if 'avg_score' not in val_metrics:
+                            val_metrics['avg_score'] = np.mean([val_metrics[key] for key in val_metrics if key.startswith('val/test_score/')])
+                        # if 'diversity/avg_equ_div' not in val_metrics:
+                        #     val_metrics['diversity/avg_euq_div'] = np.mean(avg_diversity)
                         metrics.update(val_metrics)
+
 
                     if self.config.trainer.save_freq > 0 and \
                             self.global_steps % self.config.trainer.save_freq == 0:
@@ -779,8 +910,11 @@ class RayPPOTrainer(object):
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
 
+                avg_equ_metrics = {'diversity/avg_equ_div': np.mean(avg_diversity)}
+
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)
+                logger.log(data=avg_equ_metrics, step=self.global_steps)
 
                 self.global_steps += 1
 
