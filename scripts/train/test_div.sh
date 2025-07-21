@@ -56,9 +56,9 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.n_val=1 \
     actor_rollout_ref.actor.use_div=True \
-    actor_rollout_ref.actor.div_coeff=0.001 \
+    actor_rollout_ref.actor.div_coeff=0.1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
-    algorithm.kl_ctrl.kl_coef=0.001 \
+    algorithm.kl_ctrl.kl_coef=0.1 \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='div' \

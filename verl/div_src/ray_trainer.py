@@ -313,6 +313,13 @@ def _timer(name: str, timing_raw: Dict[str, float]):
     timing_raw[name] = timer.last
 
 
+def repeat_by_groups(hidden_states:torch.Tensor, rollout_n):
+    bsz, hidden_dim = hidden_states.shape
+    assert bsz % rollout_n == 0, f"bsz ({bsz}) must be divisible by rollout_n ({rollout_n})"
+    grouped = hidden_states.reshape(-1, rollout_n, hidden_dim) # (group_n, rollout_n, dim)
+    label_pos = torch.tensor(range(bsz))%rollout_n
+    return grouped.repeat_interleave(rollout_n, dim=0).reshape(bsz,rollout_n,hidden_dim), label_pos
+
 class RayPPOTrainer(object):
     """
     Note that this trainer runs on the driver process on a single CPU/GPU node.
@@ -468,8 +475,11 @@ class RayPPOTrainer(object):
             data_source_reward[data_source].append(reward_tensor[i].item())
 
         metric_dict = {}
+        average_score = []
         for data_source, rewards in data_source_reward.items():
             metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
+            average_score.append(metric_dict[f'val/test_score/{data_source}'])
+        metric_dict[f'val/test_score/average'] = np.mean(average_score)
 
         return metric_dict
 
@@ -622,38 +632,22 @@ class RayPPOTrainer(object):
                     # generate a batch
                     with _timer('gen', timing_raw):
                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
-                        # print("gen_batch_output:", gen_batch_output)
+                    
+                    if self.config.actor_rollout_ref.actor.use_div:
+                        from verl.div_src.diversity_metric import calculate_belu_matrix, calculate_equation_matrix
+                        response_str = self.tokenizer.batch_decode(gen_batch_output.batch['responses'],skip_special_tokens=True)
+                        div_belu, div_equ = [],[]
 
-                    # if self.config.actor_rollout_ref.rollout.div_sample:
-                    #     from verl.div_src.diversity_metric import select_diverse_embeddings_batch
-                    #     gene_non_tensor = batch.select(non_tensor_batch_keys=['reward_model','data_source'])
-                    #     gene_non_tensor = gene_non_tensor.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_total,interleave=True)
-                    #     reward_tensor = self.reward_fn(gene_non_tensor.union(gen_batch_output))
-                        
-                        
-                    #     # get response hidden_states (bsz, embedding_dim)
-                    #     # with torch.no_grad():
-                    #     print(f"******gene.shape*****:{gen_batch_output}")
-                    #     hidden_states = self.actor_rollout_wg.get_hidden_state(gen_batch_output)
-                    #         # outputs = self.actor_rollout_wg.actor(input_ids=gen_batch.batch['input_ids'],
-                    #         #                                              attention_mask=gen_batch.batch['attention_mask'],
-                    #         #                                              position_ids=gen_batch.batch['position_ids'],
-                    #         #                                              use_cache=False,
-                    #         #                                              output_hidden_states=True)
-                    #     print(f"******hidden_state.shape*****:{hidden_states}")
-                    #     response_str = self.tokenizer.batch_decode(gen_batch_output.batch['responses'],skip_special_tokens=True)
-                    #     # print("response_str:", response_str[-4:])
-                    #     filter_idx = np.array([],dtype=int)
-                    #     for i in range(len(gen_batch.batch)):
-                    #         group_start = i * self.config.actor_rollout_ref.rollout.n_total
-                    #         group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
-
-                    #         # correct sample                           
-                    #         idx, _ = select_diverse_embeddings_batch(response_str[group_start:group_end], self.config.actor_rollout_ref.rollout.n)
-                    #         filter_idx = np.hstack((filter_idx, idx+group_start))
-                    #     # gen_batch_output = gen_batch_output.slice(filter_idx)
-                    #     reward_tensor = reward_tensor[filter_idx]
-                        
+                        for i in range(len(gen_batch.batch)):
+                            group_start = i * self.config.actor_rollout_ref.rollout.n
+                            group_end = (i+1)*self.config.actor_rollout_ref.rollout.n
+                            group = response_str[group_start:group_end]
+                            div_belu.append(calculate_belu_matrix(group))
+                            div_equ.append(calculate_equation_matrix(group))
+                        metrics['div_metric/equ'] = np.mean(div_equ)
+                        metrics['div_metric/belu'] = np.mean(div_belu)
+                        # print(f"belu:{metrics['div_metric/belu']}; equ:{metrics['div_metric/equ']}")
+                
                     batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],dtype=object)
                 
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
@@ -722,7 +716,12 @@ class RayPPOTrainer(object):
                         # recompute old_log_probs
                         with _timer('old_log_prob', timing_raw):
                             old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
+                            old_log_prob.batch['old_hidden_states'], old_log_prob.batch['label_pos']=repeat_by_groups(
+                                hidden_states=old_log_prob.batch['old_hidden_states'], 
+                                rollout_n=self.config.actor_rollout_ref.rollout.n)
                             batch = batch.union(old_log_prob)
+                            # print("###########datas:",batch.batch)
+                            # print(f"***{self.tokenizer.batch_decode(batch.batch['input_ids'][:,:1024], skip_special_tokens=True)}")
 
                         if self.use_reference_policy:
                             # compute reference log_prob

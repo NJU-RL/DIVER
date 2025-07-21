@@ -473,7 +473,7 @@ class ActorRolloutRefWorker(Worker):
         # perform recompute log_prob
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data)
-            old_log_probs = self.actor.compute_log_prob(data=data)
+            old_log_probs  = self.actor.compute_log_prob(data=data)
             data.batch['old_log_probs'] = old_log_probs
             data = self.ulysses_sharding_manager.postprocess_data(data)
 

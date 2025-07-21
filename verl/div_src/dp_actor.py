@@ -54,6 +54,7 @@ class DataParallelPPOActor(BasePPOActor):
         self.use_ulysses_sp = self.ulysses_sequence_parallel_size > 1
 
         self.compute_entropy_from_logits = torch.compile(verl_F.entropy_from_logits, dynamic=True)
+        self.cross_entropy_loss = nn.CrossEntropyLoss()
 
     def _forward_micro_batch(self, micro_batch, temperature) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -225,29 +226,41 @@ class DataParallelPPOActor(BasePPOActor):
         else:
             micro_batches = batch.split(micro_batch_size)
 
-        log_probs_lst = []
+        log_probs_lst, last_hidden_states_lst = [], []
         for micro_batch in micro_batches:
             with torch.no_grad():
-                _, log_probs, _ = self._forward_micro_batch(micro_batch, temperature=temperature)
+                _, log_probs, last_hidden_states = self._forward_micro_batch(micro_batch, temperature=temperature)
             log_probs_lst.append(log_probs)
+            last_hidden_states_lst.append(last_hidden_states)
         log_probs = torch.concat(log_probs_lst, dim=0)
+        last_hidden_states = torch.concat(last_hidden_states_lst,dim=0)
 
         if use_dynamic_bsz:
             indices = list(itertools.chain.from_iterable(indices))
             assert len(indices) == log_probs.size(0), f"{len(indices)} vs. {log_probs.size()}"
             revert_indices = torch.tensor(get_reverse_idx(indices), dtype=torch.long)
             log_probs = log_probs[revert_indices]
+            last_hidden_states[revert_indices]
 
-        return log_probs
+        return log_probs, last_hidden_states
     
-    # def disp_loss(self, hidden_states: torch.Tensor, tau: float = 1.0):
-    #     """
-    #     Args: 
-    #         hidden_states: tensor of shape [batch_size, hidden_dim]
-    #     """
-    #     D = torch.pdist(hidden_states.float(), p=2).pow(2)
-    #     loss = torch.log(torch.mean(torch.exp(-D/tau) + 1e-8))  
-    #     return loss
+    def contrastive_loss(self, hidden_states, old_hidden_states, label_pos):
+        """
+        Args: 
+            hidden_states: [batch_size, hidden_dim]
+            old_hidden_states: [batch_size, rollout_n, hidden_dim]
+            label_pos: [batch_size]
+            
+        """
+        hidden_states = nn.functional.normalize(hidden_states, p=2, dim=1)
+        old_hidden_states = nn.functional.normalize(old_hidden_states, p=2, dim=2)
+        
+        logits = torch.bmm(hidden_states.unsqueeze(dim=1), old_hidden_states.transpose(1,2)) #(bsz, 1, rollout_n)
+        # print("logits.shape:",logits.shape)
+        loss = self.cross_entropy_loss(logits.squeeze(1), label_pos.to(logits.device))
+        # print("cl_loss:",loss)
+        
+        return loss
     
     def disp_loss(self, hidden_states: torch.Tensor, tau: float = 1.0):
         # Z = hidden_states.mean(dim=1)  # (batch_size, hidden_dim)
@@ -259,8 +272,6 @@ class DataParallelPPOActor(BasePPOActor):
 
         D_matrix = D_matrix.triu(diagonal=1)
         D = D_matrix[D_matrix > 0]
-
-        # print(f'D mat: {D_matrix}')
 
         loss = torch.log(torch.mean(torch.exp(-D/tau) + 1e-8))
         
@@ -275,7 +286,7 @@ class DataParallelPPOActor(BasePPOActor):
         self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
 
-        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages']
+        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages','old_hidden_states','label_pos']
         if self.config.use_kl_loss:
             select_keys.append('ref_log_prob')
             
@@ -308,13 +319,18 @@ class DataParallelPPOActor(BasePPOActor):
                     response_mask = attention_mask[:, -response_length:]
                     old_log_prob = data['old_log_probs']
                     advantages = data['advantages']
+                    old_hidden_states = data['old_hidden_states']
+                    label_pos = data['label_pos']
+                    # print(f"old_log_prob:{old_hidden_states}; label_pos:{label_pos}")
 
                     clip_ratio = self.config.clip_ratio
                     entropy_coeff = self.config.entropy_coeff
                     div_coeff  = self.config.div_coeff
 
                     entropy, log_prob, hidden_states = self._forward_micro_batch(micro_batch=data, temperature=temperature)
-                    disp_loss = self.disp_loss(hidden_states)
+                    print(f"###data:{data}, hidden_state.shape{hidden_states.shape}")
+                    cl_loss = self.contrastive_loss(hidden_states, old_hidden_states, label_pos)
+                    # disp_loss = self.disp_loss(hidden_states)
 
                     pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
                                                                                 log_prob=log_prob,
@@ -325,8 +341,8 @@ class DataParallelPPOActor(BasePPOActor):
                     entropy_loss = verl_F.masked_mean(entropy, response_mask)
 
                     # compute policy loss
-                    policy_loss = pg_loss - entropy_loss * entropy_coeff + div_coeff * disp_loss
-                    print(f"disp_loss:{disp_loss}; pg_loss:{pg_loss}")
+                    policy_loss = pg_loss - entropy_loss * entropy_coeff + div_coeff * cl_loss
+                    # print(f"disp_loss:{disp_loss}; pg_loss:{pg_loss}")
 
                     if self.config.use_kl_loss:
                         ref_log_prob = data['ref_log_prob']
@@ -348,7 +364,7 @@ class DataParallelPPOActor(BasePPOActor):
                         'actor/pg_loss': pg_loss.detach().item(),
                         'actor/pg_clipfrac': pg_clipfrac.detach().item(),
                         'actor/ppo_kl': ppo_kl.detach().item(),
-                        'actor/disp_loss': disp_loss.detach().item(),
+                        'actor/disp_loss': cl_loss.detach().item(),
                     }
                     append_to_dict(metrics, data)
 

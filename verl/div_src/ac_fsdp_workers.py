@@ -430,37 +430,6 @@ class ActorRolloutRefWorker(Worker):
         torch.cuda.empty_cache()
         return output
     
-    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
-    def get_hidden_state(self, gene_batch:DataProto):
-        """
-        Args:
-            gene.batch(DataProto): a DataProto containing keys
-
-                ``input_ids``: tensor of shape [batch_size, sequence_length]. torch.int64. Note that input_ids is the
-                concatenation of prompt and response. Note that ``sequence_length = prompt_length + response_length``.
-
-                ``attention_mask``: tensor of shape [batch_size, sequence_length]. torch.int64.
-
-                ``position_ids``: tensor of shape [batch_size, sequence_length]. torch.int64.
-
-                ``prompts``:  tensor of shape [batch_size, prompt_length]. torch.int64.
-
-                ``responses``:  tensor of shape [batch_size, response_length]. torch.int64.
-
-        Returns:
-            torch.Tensor: the log_prob tensor
-        """
-        pass
-        # gene_batch = gene_batch.to('cuda')
-        # gene_batch.batch = gene_batch.batch.to('cuda')
-        # print("&&&&&&&&&:", gene_batch)
-        # outputs = self.actor.get(input_ids=gene_batch.batch['input_ids'],
-        #                                   attention_mask=gene_batch.batch['attention_mask'],
-        #                                   position_ids=gene_batch.batch['position_ids'],
-        #                                   use_cache=False,
-        #                                   output_hidden_states=True)
-        # return outputs.hidden_states
-        # return self.actor.get_hidden_state(gene_batch)
         
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def generate_sequences(self, prompts: DataProto):
@@ -509,11 +478,14 @@ class ActorRolloutRefWorker(Worker):
         # perform recompute log_prob
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data)
-            old_log_probs = self.actor.compute_log_prob(data=data)
+            old_log_probs, last_hidden_states = self.actor.compute_log_prob(data=data)
             data.batch['old_log_probs'] = old_log_probs
+            data.batch['old_hidden_states'] = last_hidden_states
+            # print(f"old.shape:{data.batch['old_hidden_states'].shape}, {data.batch['old_log_probs'].shape}")
             data = self.ulysses_sharding_manager.postprocess_data(data)
 
-        output = data.select(batch_keys=['old_log_probs'])
+        output = data.select(batch_keys=['old_log_probs', 'old_hidden_states'])
+        # print(f"&&&&{output.batch}")
         output = output.to('cpu')
 
         # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
@@ -537,7 +509,7 @@ class ActorRolloutRefWorker(Worker):
         data.meta_info['use_dynamic_bsz'] = self.config.ref.log_prob_use_dynamic_bsz
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data)
-            output = self.ref_policy.compute_log_prob(data=data)
+            output, _ = self.ref_policy.compute_log_prob(data=data)
             output = DataProto.from_dict(tensors={'ref_log_prob': output})
             output = self.ulysses_sharding_manager.postprocess_data(output)
 
