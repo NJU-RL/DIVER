@@ -252,7 +252,7 @@ class DataParallelPPOActor(BasePPOActor):
 
         return log_probs, last_hidden_states
     
-    def contrastive_loss(self, hidden_states, old_hidden_states, label_pos):
+    def contrastive_loss(self, hidden_states, old_hidden_states, label_pos, cl_mask):
         """
         Args: 
             hidden_states: [batch_size, hidden_dim]
@@ -260,13 +260,22 @@ class DataParallelPPOActor(BasePPOActor):
             label_pos: [batch_size]
             
         """
+        valid_indices = cl_mask.bool()
+        if not valid_indices.any():
+            return torch.tensor(0.0, device=hidden_states.device, requires_grad=True)
+
+        # filter invalid sampling
+        hidden_states = hidden_states[valid_indices]
+        old_hidden_states = old_hidden_states[valid_indices]
+        label_pos = label_pos[valid_indices]
+
         hidden_states = nn.functional.normalize(hidden_states, p=2, dim=1)
         old_hidden_states = nn.functional.normalize(old_hidden_states, p=2, dim=2)
         
         logits = torch.bmm(hidden_states.unsqueeze(dim=1), old_hidden_states.transpose(1,2)) #(bsz, 1, rollout_n)
-        # print("logits.shape:",logits.shape)
+        
         loss = self.cross_entropy_loss(logits.squeeze(1), label_pos.to(logits.device))
-        # print("cl_loss:",loss)
+        print(f"cl_loss:{loss}, cl_mask:{cl_mask}")
         
         return loss
     
@@ -293,8 +302,9 @@ class DataParallelPPOActor(BasePPOActor):
         assert self.config.ppo_mini_batch_size % self.config.ppo_micro_batch_size == 0
         self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
-
-        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages','old_hidden_states','label_pos']
+        # print(f"data:{data.batch}")
+        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages','old_hidden_states','label_pos','token_level_rewards']
+        
         if self.config.use_kl_loss:
             select_keys.append('ref_log_prob')
             
@@ -329,6 +339,9 @@ class DataParallelPPOActor(BasePPOActor):
                     advantages = data['advantages']
                     old_hidden_states = data['old_hidden_states']
                     label_pos = data['label_pos']
+                    cl_mask = 1-data['token_level_rewards'].sum(dim=1)
+                    # print(f"cl_mask:{cl_mask}")
+
                     # print(f"old_log_prob:{old_hidden_states}; label_pos:{label_pos}")
 
                     clip_ratio = self.config.clip_ratio
@@ -350,7 +363,7 @@ class DataParallelPPOActor(BasePPOActor):
 
                     # compute policy loss
                     if self.config.use_div:
-                        cl_loss = self.contrastive_loss(hidden_states, old_hidden_states, label_pos)
+                        cl_loss = self.contrastive_loss(hidden_states, old_hidden_states, label_pos, cl_mask)
                         policy_loss = pg_loss - entropy_loss * entropy_coeff + div_coeff * cl_loss
                     else: 
                         policy_loss = pg_loss - entropy_loss * entropy_coeff

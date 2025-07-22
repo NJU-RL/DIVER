@@ -691,6 +691,8 @@ class RayPPOTrainer(object):
                         # Log to metrics
                         metrics['batch/solve_none'] = solve_none
                         metrics['batch/solve_all'] = solve_all
+                        metrics['batch/valid_sample'] = len(uids) - solve_none - solve_all
+                        
 
 
                         if self.config.trainer.rejection_sample:
@@ -720,6 +722,8 @@ class RayPPOTrainer(object):
                                 old_log_prob.batch['old_hidden_states'], old_log_prob.batch['label_pos']=repeat_by_groups(
                                     hidden_states=old_log_prob.batch['old_hidden_states'], 
                                     rollout_n=self.config.actor_rollout_ref.rollout.n)
+                                # print("####reward_tensor:", reward_tensor.shape)
+                                # print(f"###score:{reward_tensor.sum(dim=1)}")
                             else:
                                 old_log_prob.batch['label_pos'] = None
                             batch = batch.union(old_log_prob)
