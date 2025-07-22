@@ -177,8 +177,10 @@ class DataParallelPPOActor(BasePPOActor):
                 logits = logits[:, -response_length - 1:-1]  # (bsz, response_length)
                 log_probs = logprobs_from_logits(logits, micro_batch['responses'])
                 entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
-
-            return entropy, log_probs, last_hidden_states
+            if self.config.use_div:
+                return entropy, log_probs, last_hidden_states
+            else:
+                return entropy, log_probs, None
 
     def _optimizer_step(self):
         assert self.config.grad_clip is not None
@@ -233,14 +235,20 @@ class DataParallelPPOActor(BasePPOActor):
             log_probs_lst.append(log_probs)
             last_hidden_states_lst.append(last_hidden_states)
         log_probs = torch.concat(log_probs_lst, dim=0)
-        last_hidden_states = torch.concat(last_hidden_states_lst,dim=0)
+
+        if self.config.use_div:
+            last_hidden_states = torch.concat(last_hidden_states_lst,dim=0)
+        else:
+            last_hidden_states = None
 
         if use_dynamic_bsz:
             indices = list(itertools.chain.from_iterable(indices))
             assert len(indices) == log_probs.size(0), f"{len(indices)} vs. {log_probs.size()}"
             revert_indices = torch.tensor(get_reverse_idx(indices), dtype=torch.long)
             log_probs = log_probs[revert_indices]
-            last_hidden_states[revert_indices]
+
+            if self.config.use_div:
+                last_hidden_states[revert_indices]
 
         return log_probs, last_hidden_states
     
@@ -328,8 +336,8 @@ class DataParallelPPOActor(BasePPOActor):
                     div_coeff  = self.config.div_coeff
 
                     entropy, log_prob, hidden_states = self._forward_micro_batch(micro_batch=data, temperature=temperature)
-                    print(f"###data:{data}, hidden_state.shape{hidden_states.shape}")
-                    cl_loss = self.contrastive_loss(hidden_states, old_hidden_states, label_pos)
+                    # print(f"###data:{data}, hidden_state.shape{hidden_states.shape}")
+                    
                     # disp_loss = self.disp_loss(hidden_states)
 
                     pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
@@ -341,7 +349,11 @@ class DataParallelPPOActor(BasePPOActor):
                     entropy_loss = verl_F.masked_mean(entropy, response_mask)
 
                     # compute policy loss
-                    policy_loss = pg_loss - entropy_loss * entropy_coeff + div_coeff * cl_loss
+                    if self.config.use_div:
+                        cl_loss = self.contrastive_loss(hidden_states, old_hidden_states, label_pos)
+                        policy_loss = pg_loss - entropy_loss * entropy_coeff + div_coeff * cl_loss
+                    else: 
+                        policy_loss = pg_loss - entropy_loss * entropy_coeff
                     # print(f"disp_loss:{disp_loss}; pg_loss:{pg_loss}")
 
                     if self.config.use_kl_loss:
@@ -363,9 +375,10 @@ class DataParallelPPOActor(BasePPOActor):
                         'actor/entropy_loss': entropy_loss.detach().item(),
                         'actor/pg_loss': pg_loss.detach().item(),
                         'actor/pg_clipfrac': pg_clipfrac.detach().item(),
-                        'actor/ppo_kl': ppo_kl.detach().item(),
-                        'actor/disp_loss': cl_loss.detach().item(),
+                        'actor/ppo_kl': ppo_kl.detach().item()
                     }
+                    if self.config.use_div:
+                        data['actor/disp_loss'] = cl_loss.detach().item()
                     append_to_dict(metrics, data)
 
                 grad_norm = self._optimizer_step()

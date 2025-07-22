@@ -7,7 +7,8 @@ test = torch.tensor([
     [3,4,5,6],
     [3,4,1,4],
     [3,4,0,1]
-])
+],dtype=float)
+print(test.sum(dim=0).shape)
 print(test.reshape(2,3,4)[0])
 
 test = test.reshape(2,3,4).repeat_interleave(3, dim=0).reshape(6,3,4)

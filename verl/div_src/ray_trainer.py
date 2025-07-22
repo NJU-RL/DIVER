@@ -633,20 +633,20 @@ class RayPPOTrainer(object):
                     with _timer('gen', timing_raw):
                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
                     
-                    if self.config.actor_rollout_ref.actor.use_div:
-                        from verl.div_src.diversity_metric import calculate_belu_matrix, calculate_equation_matrix
-                        response_str = self.tokenizer.batch_decode(gen_batch_output.batch['responses'],skip_special_tokens=True)
-                        div_belu, div_equ = [],[]
+                    # if self.config.actor_rollout_ref.actor.use_div:
+                    from verl.div_src.diversity_metric import calculate_belu_matrix, calculate_equation_matrix
+                    response_str = self.tokenizer.batch_decode(gen_batch_output.batch['responses'],skip_special_tokens=True)
+                    div_belu, div_equ = [],[]
 
-                        for i in range(len(gen_batch.batch)):
-                            group_start = i * self.config.actor_rollout_ref.rollout.n
-                            group_end = (i+1)*self.config.actor_rollout_ref.rollout.n
-                            group = response_str[group_start:group_end]
-                            div_belu.append(calculate_belu_matrix(group))
-                            div_equ.append(calculate_equation_matrix(group))
-                        metrics['div_metric/equ'] = np.mean(div_equ)
-                        metrics['div_metric/belu'] = np.mean(div_belu)
-                        # print(f"belu:{metrics['div_metric/belu']}; equ:{metrics['div_metric/equ']}")
+                    for i in range(len(gen_batch.batch)):
+                        group_start = i * self.config.actor_rollout_ref.rollout.n
+                        group_end = (i+1)*self.config.actor_rollout_ref.rollout.n
+                        group = response_str[group_start:group_end]
+                        div_belu.append(calculate_belu_matrix(group))
+                        div_equ.append(calculate_equation_matrix(group))
+                    metrics['div_metric/equ'] = np.mean(div_equ)
+                    metrics['div_metric/belu'] = np.mean(div_belu)
+                    # print(f"belu:{metrics['div_metric/belu']}; equ:{metrics['div_metric/equ']}")
                 
                     batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],dtype=object)
                 
@@ -716,9 +716,12 @@ class RayPPOTrainer(object):
                         # recompute old_log_probs
                         with _timer('old_log_prob', timing_raw):
                             old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
-                            old_log_prob.batch['old_hidden_states'], old_log_prob.batch['label_pos']=repeat_by_groups(
-                                hidden_states=old_log_prob.batch['old_hidden_states'], 
-                                rollout_n=self.config.actor_rollout_ref.rollout.n)
+                            if self.config.actor_rollout_ref.actor.use_div:
+                                old_log_prob.batch['old_hidden_states'], old_log_prob.batch['label_pos']=repeat_by_groups(
+                                    hidden_states=old_log_prob.batch['old_hidden_states'], 
+                                    rollout_n=self.config.actor_rollout_ref.rollout.n)
+                            else:
+                                old_log_prob.batch['label_pos'] = None
                             batch = batch.union(old_log_prob)
                             # print("###########datas:",batch.batch)
                             # print(f"***{self.tokenizer.batch_decode(batch.batch['input_ids'][:,:1024], skip_special_tokens=True)}")
