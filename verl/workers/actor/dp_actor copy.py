@@ -16,20 +16,16 @@ Single Process Actor
 """
 
 import itertools
-from turtle import position
 from typing import Iterable, Tuple
 from urllib import response
 
 from cv2 import accumulate
-from numpy import indices, positive
-from regex import F
 import torch
-from torch import logit, nn
+from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from verl import DataProto
 from verl.trainer.ppo import core_algos
-from verl.workers import rollout
 from verl.workers.actor import BasePPOActor
 from verl.utils.py_functional import append_to_dict
 from verl.utils.torch_functional import logprobs_from_logits, masked_mean
@@ -67,7 +63,6 @@ class DataParallelPPOActor(BasePPOActor):
             entropy: # (bs, response_len)
             log_probs: # (bs, response_len)
         """
-        use_div = True
         response_length = micro_batch['responses'].size(-1)
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
             input_ids = micro_batch['input_ids']
@@ -98,22 +93,11 @@ class DataParallelPPOActor(BasePPOActor):
                 input_ids_rmpad_rolled = input_ids_rmpad_rolled.squeeze(0)  # ((total_nnz / sp) + pad)
 
                 # only pass input_ids and position_ids to enable flash_attn_varlen
-                if use_div:
-                    output = self.actor_module(input_ids=input_ids_rmpad,
-                                               attention_mask=None,
-                                               position_ids=position_ids_rmpad,
-                                               use_cache=False,
-                                               output_hidden_states=True)
-                    # print(f'len: {len(output.hidden_states)}')
-                    # print(f'hidden state shape: {output.hidden_states[-1].shape}')
-                    hidden_states_rmpad = output.hidden_states[-1].squeeze(0) # (total_nnz, hidden_dim)
-                    
-
-                else:
-                    output = self.actor_module(input_ids=input_ids_rmpad,
-                                               attention_mask=None,
-                                               position_ids=position_ids_rmpad,
-                                               use_cache=False)  # prevent model thinks we are generating
+                output = self.actor_module(input_ids=input_ids_rmpad,
+                                           attention_mask=None,
+                                           position_ids=position_ids_rmpad,
+                                           use_cache=False,
+                                           output_hidden_states=True)  # prevent model thinks we are generating
                 logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
 
                 logits_rmpad.div_(temperature)
@@ -132,22 +116,10 @@ class DataParallelPPOActor(BasePPOActor):
                                                             gather_dim=0,
                                                             unpad_dim=0,
                                                             padding_size=pad_size)
-                    if use_div:
-                        full_hidden_states = gather_outpus_and_unpad(hidden_states=hidden_states_rmpad,
-                                                                     gather_dim=0,
-                                                                     unpad_dim=0,
-                                                                     padding_size=pad_size)
+                
+                # print(f'unpad entropy: {entropy_rmpad.shape}')
 
                 # pad back to (bsz, seqlen)
-                if use_div:
-                    full_hidden_states = pad_input(hidden_states=hidden_states_rmpad,
-                                                indices=indices,
-                                                batch=batch_size,
-                                                seqlen=seqlen)
-                    last_indices = torch.clamp(attention_mask[:,-response_length:].sum(dim=1)-1, min=0)
-                    batch_indices = torch.arange(batch_size, device=full_hidden_states.device)
-                    last_hidden_states = full_hidden_states[:,-response_length:][batch_indices, last_indices] # (bsz, hidden_dim)
-                    
                 full_entropy = pad_input(hidden_states=entropy_rmpad.unsqueeze(-1),
                                          indices=indices,
                                          batch=batch_size,
@@ -157,36 +129,43 @@ class DataParallelPPOActor(BasePPOActor):
                                            batch=batch_size,
                                            seqlen=seqlen)
                 
+                # print(f'full entropy: {full_entropy.shape}')
+
                 # only return response part:
                 entropy = full_entropy.squeeze(-1)[:, -response_length - 1:-1]  # (bsz, response_length)
                 log_probs = full_log_probs.squeeze(-1)[:, -response_length - 1:-1]  # (bsz, response_length)
-                # print(f"last_hidden_states:{last_hidden_states}")
+
+                # print(f'entropy: {entropy.shape}')
+
+                # print(f'len: {len(output.hidden_states)}')
+                # print(f'hidden state shape: {output.hidden_states[-1].shape}')
+
+                hidden_states_rmpad = output.hidden_states[-1].squeeze(0) # (total_nnz, hidden_dim) remove the first dimension
+
+                full_hidden_states = pad_input(
+                    hidden_states=hidden_states_rmpad,  # (total_nnz, hidden_dim)
+                    indices=indices,
+                    batch=batch_size,
+                    seqlen=seqlen
+                )
+                # print(f'full hidden states shape: {full_hidden_states.shape}')
+                hidden_states = full_hidden_states[:, -response_length - 1:-1, :]
+                # print(f'response hidden states shape: {hidden_states.shape}')
+
+
 
             else:  # not using rmpad and no ulysses sp
-                if use_div:
-                    output = self.actor_module(input_ids=input_ids,
-                                               attention_mask=attention_mask,
-                                               position_ids=position_ids,
-                                               output_hidden_states=True,
-                                               use_cache=False)
-                    hidden_states = output.hidden_states[-1].squeeze(0)
-                    last_indices = torch.clamp(attention_mask[:,-response_length:].sum(dim=1)-2, min=0)
-                    batch_indices = torch.arange(batch_size, device=hidden_states.device)
-                    last_hidden_states = hidden_states[:,-response_length:][batch_indices, last_indices]
-                else:
-                    output = self.actor_module(input_ids=input_ids,
-                                               attention_mask=attention_mask,
-                                               position_ids=position_ids,
-                                               use_cache=False)  # prevent model thinks we are generating
+                output = self.actor_module(input_ids=input_ids,
+                                           attention_mask=attention_mask,
+                                           position_ids=position_ids,
+                                           use_cache=False)  # prevent model thinks we are generating
                 logits = output.logits
                 logits.div_(temperature)
                 logits = logits[:, -response_length - 1:-1]  # (bsz, response_length)
                 log_probs = logprobs_from_logits(logits, micro_batch['responses'])
                 entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
-            if use_div:
-                return entropy, log_probs, last_hidden_states
-            else:
-                return entropy, log_probs, None
+
+            return entropy, log_probs, hidden_states
 
     def _optimizer_step(self):
         assert self.config.grad_clip is not None
@@ -195,7 +174,6 @@ class DataParallelPPOActor(BasePPOActor):
             grad_norm = self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
         else:
             grad_norm = torch.nn.utils.clip_grad_norm_(self.actor_module.parameters(), max_norm=self.config.grad_clip)
-
         self.actor_optimizer.step()
         return grad_norm
 
@@ -237,14 +215,11 @@ class DataParallelPPOActor(BasePPOActor):
             micro_batches = batch.split(micro_batch_size)
 
         log_probs_lst = []
-        hidden_states_lst = []
         for micro_batch in micro_batches:
             with torch.no_grad():
-                _, log_probs, hidden_states = self._forward_micro_batch(micro_batch, temperature=temperature)
+                _, log_probs, _ = self._forward_micro_batch(micro_batch, temperature=temperature)
             log_probs_lst.append(log_probs)
-            hidden_states_lst.append(hidden_states)
         log_probs = torch.concat(log_probs_lst, dim=0)
-        hidden_states = torch.concat(hidden_states_lst, dim=0)
 
         # print(f'log probs: {log_probs.shape}')
 
@@ -253,11 +228,8 @@ class DataParallelPPOActor(BasePPOActor):
             assert len(indices) == log_probs.size(0), f"{len(indices)} vs. {log_probs.size()}"
             revert_indices = torch.tensor(get_reverse_idx(indices), dtype=torch.long)
             log_probs = log_probs[revert_indices]
-            hidden_states = hidden_states[revert_indices]
-        # print(f'log probs: {log_probs.shape}')
-        # print(f'hidden states: {hidden_states.shape}')
 
-        return log_probs, hidden_states
+        return log_probs
     
     def compute_group_disp_loss(self, hidden_states: torch.Tensor, rollout_n: int, tau: float = 1.0):
         """
@@ -314,99 +286,33 @@ class DataParallelPPOActor(BasePPOActor):
         
         return total_loss
     
-    def disp_loss(self, old_hidden_states: torch.Tensor, hidden_states: torch.Tensor, tau: float = 1., epsilon=1e-8):
-        '''hidden states: [bsz, rollout_n, hidden_dim]'''
-        bsz, n, _ = hidden_states.shape
-        device = hidden_states.device
+    def disp_loss(self, hidden_states: torch.Tensor, tau: float = 1.0):
+        Z = hidden_states.mean(dim=1)  # (batch_size, hidden_dim)
+        Z = nn.functional.normalize(Z, p=2, dim=1)
 
-        # old_hidden_states = old_hidden_states[:, 1:, :]
-        # hidden_states = hidden_states[:, 1:, :]
+        sim_matrix = torch.mm(Z, Z.t())
 
-        Z_old = torch.nn.functional.normalize(old_hidden_states, dim=2)
-        Z = torch.nn.functional.normalize(hidden_states, dim=2)
-        
-        sim_matrix = torch.bmm(Z_old, Z.transpose(1, 2)) # [bsz, n, 1]
-        sim_matrix.squeeze(dim=2)
         D_matrix = 2 * (1 - sim_matrix)
-        print(f'D matrix: {D_matrix.shape}')
+
+        D_matrix = D_matrix.triu(diagonal=1)
+        D = D_matrix[D_matrix > 0]
+
+        # print(f'D mat: {D_matrix}')
+
+        loss = torch.log(torch.mean(torch.exp(-D/tau) + 1e-8))
         
-        total_loss = 0
-        for i in range(bsz):
-            D = D_matrix[i]
-            print(f'D: {D}')
-            total_loss += torch.log(torch.mean(torch.exp(-D/tau) + epsilon))
-        
-        print(f'total loss: {total_loss}')
-        
-        return total_loss
-    
-    def _compute_group_constrastive_loss(self, old_hidden_states: torch.Tensor, hidden_states: torch.Tensor, temperature=1.0):
-        """
-        Compute logits for constrastive loss within a group.
-
-        Args:
-            old_hidden_states: #(bsz, rollout_n, hidden_dim)
-            hidden_states: #(bsz, 1, hidden_dim)
-
-        Return:
-            loss
-        """
-        bsz, _, _ = old_hidden_states.shape
-
-        old_hidden_states_norm = torch.nn.functional.normalize(old_hidden_states, p=2, dim=2)
-        hidden_states_norm = torch.nn.functional.normalize(hidden_states, p=2, dim=2)
-
-        logits = torch.bmm(old_hidden_states_norm, hidden_states_norm.transpose(1, 2))  # [bsz, rollout_n, 1]
-        # logits = torch.bmm(hidden_states, old_hidden_states.transpose(1, 2)) # [bsz, 1, rollout_n]
- 
-        logits = logits.squeeze(-1) / temperature  # [bsz, rollout_n]
-        labels = torch.zeros(bsz, dtype=torch.long, device=logits.device)
-
-        for i in range(bsz):
-            for j in range(8):
-                is_equal = torch.allclose(
-                    old_hidden_states_norm[i, j],
-                    hidden_states_norm[i, 0],
-                    rtol=1e-5
-                )
-                if is_equal:
-                    print(f"Batch {i}, Vector {j}: Vectors are equal")
-
-        # output_str = []
-        # for i in range(bsz):
-        #     output_str.append(f'========== batch {i} ===========')
-        #     output_str.append(f'hidden states: {hidden_states_norm[i][0][:5].tolist()}')
-        #     for j in range(8):
-        #         output_str.append(f'old hidden states {j}: {old_hidden_states_norm[i][j][:5].tolist()}')
-
-        # output_str.append(f'logits: {logits}')
-        # print('\n'.join(output_str))
-
-            
-        # print('logits:')
-        # print(logits)
-        # for i in range(bsz):
-        #     print(f'batch num {i}: {logits[i]}')
-
-        # loss = 0
-        # for i in range(bsz):
-        #     loss += nn.functional.cross_entropy(logits[i].unsqueeze(0), 0)
-        loss = nn.functional.cross_entropy(logits, labels)
-
         return loss
-
 
     def update_policy(self, data: DataProto):
         # make sure we are in training mode
         self.actor_module.train()
-        # print("****config: ", self.config.ppo_mini_b
-        # atch_size, self.config.ppo_micro_batch_size)
+        # print("****config: ", self.config.ppo_mini_batch_size, self.config.ppo_micro_batch_size)
 
         assert self.config.ppo_mini_batch_size % self.config.ppo_micro_batch_size == 0
         self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
 
-        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages', 'old_hidden_states']
+        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages']
         if self.config.use_kl_loss:
             select_keys.append('ref_log_prob')
             
@@ -433,10 +339,10 @@ class DataParallelPPOActor(BasePPOActor):
 
                 self.actor_optimizer.zero_grad()
                 
-                # hidden_states_lst = []
-                # # responses_lst = []
+                hidden_states_lst = []
+                # responses_lst = []
 
-                # accumulated_policy_loss = 0
+                accumulated_policy_loss = 0
 
                 for data in micro_batches:
                     print("MICROBATCH STEP")
@@ -447,7 +353,6 @@ class DataParallelPPOActor(BasePPOActor):
                     response_mask = attention_mask[:, -response_length:]
                     old_log_prob = data['old_log_probs']
                     advantages = data['advantages']
-                    old_hidden_states = data['old_hidden_states']
 
                     # from transformers import AutoModelForCausalLM, AutoTokenizer
                     # model_path = "/mnt/petrelfs/share_data/huzican/Qwen2.5-7B-orz-tok"
@@ -482,42 +387,21 @@ class DataParallelPPOActor(BasePPOActor):
 
                     entropy, log_prob, hidden_states = self._forward_micro_batch(micro_batch=data, temperature=temperature)
 
-                    # print('old hidden states:')
-                    # for i in range(8):
-                    #     print(f'num {i}: {torch.mean(old_hidden_states[1][i])}')
-                    # print(f'hidden state: {torch.mean(hidden_states[1])}')
-
-                    hidden_states = hidden_states.unsqueeze(dim=1)
-
-
-                    # print(f'old hidden states shape: {old_hidden_states.shape}')
-                    # print(f'old hidden states grad: {old_hidden_states.requires_grad}')
-                    # print(f'hidden_states shape: {hidden_states.shape}')
-                    # print(f'hidden_states grad: {hidden_states.requires_grad}')
-
-                    constrastive_loss = self._compute_group_constrastive_loss(old_hidden_states, hidden_states)
-                    # constrastive_loss = self.disp_loss(old_hidden_states, hidden_states)
-
-                    # print(f'constrast loss: {constrastive_loss}')
-
-                    # print(f'logits: {logits.shape}')
-                    # print(logits.requires_grad)
-                    # print(f'labels: {labels}')
-
-                    # hidden_states_lst.append((hidden_states))
+                    hidden_states_lst.append((hidden_states))
 
                     pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
                                                                                 log_prob=log_prob,
                                                                                 advantages=advantages,
                                                                                 eos_mask=response_mask,
                                                                                 cliprange=clip_ratio)
-                    # print(f'pg loss shape: {pg_loss.shape}')
-                    # print(f'pg clip shape: {pg_clipfrac.shape}')
+                    print(f'pg loss shape: {pg_loss.shape}')
+                    print(f'pg clip shape: {pg_clipfrac.shape}')
                     # compute entropy loss from entropy
                     entropy_loss = verl_F.masked_mean(entropy, response_mask)
 
                     # compute policy loss
-                    policy_loss = pg_loss - entropy_loss * entropy_coeff 
+                    policy_loss = pg_loss - entropy_loss * entropy_coeff
+
                     if self.config.use_kl_loss:
                         ref_log_prob = data['ref_log_prob']
                         # compute kl loss
@@ -530,42 +414,40 @@ class DataParallelPPOActor(BasePPOActor):
                         metrics['actor/kl_loss'] = kl_loss.detach().item()
                         metrics['actor/kl_coef'] = self.config.kl_loss_coef
 
-                    loss = policy_loss / self.gradient_accumulation
-                    loss.backward()
-                    # accumulated_policy_loss += policy_loss / self.gradient_accumulation
+                    # loss = policy_loss / self.gradient_accumulation
+                    # loss.backward()
+                    accumulated_policy_loss += policy_loss / self.gradient_accumulation
 
                     data = {
                         'actor/entropy_loss': entropy_loss.detach().item(),
-                        'actor/pg_loss': pg_loss.detach().item(),
-                        # 'actor/constrastive_loss': constrastive_loss.detach().item(),
+                        'actor/pg_loss': pg_loss.mean().detach().item(),
                         'actor/pg_clipfrac': pg_clipfrac.detach().item(),
                         'actor/ppo_kl': ppo_kl.detach().item(),
                     }
                     append_to_dict(metrics, data)
 
-                # hidden_states = torch.concat(hidden_states_lst, dim=0)
+                hidden_states = torch.concat(hidden_states_lst, dim=0)
                 
-                # if self.config.use_dynamic_bsz:
-                #     indices = list(itertools.chain.from_iterable(indices))
-                #     assert len(indices) == hidden_states.size(0), f"{len(indices)} vs. {hidden_states.size()}"
-                #     revert_indices = torch.tensor(get_reverse_idx(indices), dtype=torch.long)
-                #     hidden_states = hidden_states[revert_indices]
+                if self.config.use_dynamic_bsz:
+                    indices = list(itertools.chain.from_iterable(indices))
+                    assert len(indices) == hidden_states.size(0), f"{len(indices)} vs. {hidden_states.size()}"
+                    revert_indices = torch.tensor(get_reverse_idx(indices), dtype=torch.long)
+                    hidden_states = hidden_states[revert_indices]
 
 
-                # print(f'hidden_states: {hidden_states.shape}')
+                print(f'hidden_states: {hidden_states.shape}')
 
-                # disper_loss = self.compute_group_disp_loss(hidden_states, rollout_n=8)
+                disper_loss = self.compute_group_disp_loss(hidden_states, rollout_n=8)
 
-                # print(f'disper loss: {disper_loss}')
-                # print(f'disper loss grad: {disper_loss.requires_grad}')
+                print(f'disper loss: {disper_loss}')
+                print(f'disper loss grad: {disper_loss.requires_grad}')
 
-                # total_loss = accumulated_policy_loss + 0.01 * disper_loss
-                # total_loss.backward()
+                total_loss = accumulated_policy_loss + 0.01 * disper_loss
+                total_loss.backward()
 
-                # metrics['actor/disper_loss'] = disper_loss.detach().item()
+                metrics['actor/disper_loss'] = disper_loss.detach().item()
 
                 grad_norm = self._optimizer_step()
-                # print(f'grad norm: {grad_norm.shape}')
                 data = {'actor/grad_norm': grad_norm.detach().item()}
                 append_to_dict(metrics, data)
         self.actor_optimizer.zero_grad()

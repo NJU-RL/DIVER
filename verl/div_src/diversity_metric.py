@@ -1,8 +1,61 @@
 import numpy as np
 import heapq
 from nltk.translate.bleu_score import sentence_bleu
+import re
 
-def calculate_similarity_matrix(group_rollouts, select_n, filter_high_div):
+
+def extract_formulas(response):
+    # Define regular patterns for formulas
+    patterns = [
+        r'\\\[([^\]]*?)\\\]',     # \[ \]
+        r'\\\(([^\)]*?)\\\)',     # \( \)
+        r'\$([^\$]*?)\$'          # $ $
+    ]
+    
+    formulas = set()
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, response)
+        formulas.update(matches)
+    return list(formulas) 
+
+
+def calculate_unique_diversity(formulas, current_index):
+    if not formulas[current_index]:  # 如果当前response为空
+        return 0
+    
+    # 获取所有其他response中的公式
+    other_formulas = set()
+    for i in range(len(formulas)):
+        if i != current_index:
+            other_formulas.update(formulas[i])
+    
+    # 获取当前response中的公式
+    current_formulas = set(formulas[current_index])
+    
+    # 计算只在当前response中出现的公式（独特公式）
+    unique_formulas = current_formulas - other_formulas
+    
+    # 计算多样性指标 D_eq
+    D_eq = len(unique_formulas) / len(formulas[current_index])
+
+    # print(f'{len(unique_formulas)} / {len(formulas[current_index])}')
+    
+    return D_eq
+
+def calculate_equation_matrix(group_rollouts):
+    formulas = []
+    for i in range(len(group_rollouts)):
+        formulas.append(extract_formulas(group_rollouts[i]))
+    
+    diversity = []
+
+    for i in range(len(formulas)):
+        diversity.append(calculate_unique_diversity(formulas, i))
+
+    return sum(diversity)/len(diversity)
+
+def calculate_belu_matrix(group_rollouts):
     n = len(group_rollouts)
     similarity_matrix = np.zeros((n, n))
     for i in range(n):
@@ -20,17 +73,7 @@ def calculate_similarity_matrix(group_rollouts, select_n, filter_high_div):
             similarity = (bleu_i_j + bleu_j_i) / 2
             similarity_matrix[i][j] = similarity
             similarity_matrix[j][i] = similarity
-    
-    # print(f'sim matrix: {similarity_matrix}')
 
     avg_similarities = np.sum(similarity_matrix, axis=1) / (n-1)
-    if select_n >= n:
-        return list(range(n))
-    if filter_high_div:
-        # Use the min-heap to find the smallest n elements and their indexes
-        indices = heapq.nsmallest(select_n, range(len(avg_similarities)), key=lambda i: avg_similarities[i])
-    else:
-        indices = heapq.nsmallest(select_n, range(len(avg_similarities)), key=lambda i: -avg_similarities[i])
-    select_seqs = [group_rollouts[i] for i in indices]
 
-    return np.array(indices), select_seqs
+    return avg_similarities.mean()

@@ -128,9 +128,13 @@ def group_hidden_states(hidden_states: torch.tensor, rollout_n=8):
 
     result = gathered.reshape(bsz, rollout_n, hidden_dim)
 
-    # print(f'results: {result.shape}')
 
     return result
+
+def group_hidden_states_order(hidden_states: torch.tensor, rollout_n=8):
+    bsz, hidden_dim = hidden_states.shape
+    grouped = hidden_states.reshape(-1, rollout_n, hidden_dim)
+    return grouped.repeat_interleave(rollout_n, dim=0).reshape(bsz,rollout_n,hidden_dim)
 
 
 def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, kl_penalty='kl'):
@@ -675,16 +679,19 @@ class RayPPOTrainer(object):
                         # {}
                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
 
-                    from verl.div_src.diversity_metric_equation import calculate_avg_equ_diversity
+                    from verl.div_src.diversity_metric import calculate_belu_matrix, calculate_equation_matrix
                     response_str = self.tokenizer.batch_decode(gen_batch_output.batch['responses'],skip_special_tokens=True)
 
-                    avg_diversity = []
+                    div_belu, div_equ = [],[]
 
                     for i in range(len(gen_batch.batch)):
                         group_start = i * self.config.actor_rollout_ref.rollout.n_total
                         group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
                         group = response_str[group_start:group_end]
-                        avg_diversity.append(calculate_avg_equ_diversity(group))
+                        div_belu.append(calculate_belu_matrix(group))
+                        div_equ.append(calculate_equation_matrix(group))
+                    metrics['div_metric/equ'] = np.mean(div_equ)
+                    metrics['div_metric/belu'] = np.mean(div_belu)
                     
                     # print(f'avg_diversity: {np.mean(avg_diversity)}')
                     
@@ -813,7 +820,7 @@ class RayPPOTrainer(object):
                             old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
                             batch = batch.union(old_log_prob)
                         print(f'old hidden states: {batch.batch["old_hidden_states"].shape}')
-                        batch.batch['old_hidden_states'] = group_hidden_states(batch.batch['old_hidden_states'])
+                        batch.batch['old_hidden_states'] = group_hidden_states_order(batch.batch['old_hidden_states'])
                         print(f'grouped old hidden states: {batch.batch["old_hidden_states"].shape}')
 
                         if self.use_reference_policy:
@@ -834,7 +841,7 @@ class RayPPOTrainer(object):
                     # balance the number of valid tokens on each dp rank.
                     # Note that this breaks the order of data inside the batch.
                     # Please take care when you implement group based adv computation such as GRPO and rloo
-                    # self._balance_batch(batch, metrics=metrics)
+                    self._balance_batch(batch, metrics=metrics)
 
                     # compute global_valid tokens
                     batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
@@ -910,11 +917,11 @@ class RayPPOTrainer(object):
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
 
-                avg_equ_metrics = {'diversity/avg_equ_div': np.mean(avg_diversity)}
+                # avg_equ_metrics = {'diversity/avg_equ_div': np.mean(avg_diversity)}
 
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)
-                logger.log(data=avg_equ_metrics, step=self.global_steps)
+                # logger.log(data=avg_equ_metrics, step=self.global_steps)
 
                 self.global_steps += 1
 
