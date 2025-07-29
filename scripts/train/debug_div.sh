@@ -32,7 +32,7 @@ python3 -m verl.div_src.main_rl \
     data.train_batch_size=16 \
     data.val_batch_size=512 \
     data.max_prompt_length=1024 \
-    data.max_response_length=512 \
+    data.max_response_length=8192 \
     actor_rollout_ref.model.path=$MODEL_PATH  \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
@@ -62,7 +62,7 @@ python3 -m verl.div_src.main_rl \
     trainer.critic_warmup=0 \
     trainer.logger=['console'] \
     trainer.project_name='div' \
-    trainer.experiment_name='cl' \
+    trainer.experiment_name='cl_norm' \
     +trainer.val_before_train=False \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \

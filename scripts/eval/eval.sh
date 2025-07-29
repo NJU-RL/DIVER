@@ -28,7 +28,7 @@ fi
 python3 -m verl.div_src.main_rl \
     algorithm.adv_estimator=grpo \
     data.train_files=dataset/openr1.parquet \
-    data.val_files=dataset/valid.all.parquet \
+    data.val_files=dataset/aime.parquet \
     data.train_batch_size=32 \
     data.val_batch_size=512 \
     data.max_prompt_length=1024 \
@@ -60,10 +60,11 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.1 \
     trainer.critic_warmup=0 \
-    trainer.logger=['console'] \
-    trainer.project_name='div' \
-    trainer.experiment_name='cl_cos_t_1_2' \
-    +trainer.val_before_train=False \
+    trainer.logger=['console','wandb'] \
+    trainer.project_name='eval_div' \
+    trainer.experiment_name='baseline' \
+    +trainer.val_before_train=True \
+    +trainer.val_only=True \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=50 \

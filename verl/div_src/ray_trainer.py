@@ -317,7 +317,7 @@ def repeat_by_groups(hidden_states:torch.Tensor, rollout_n):
     bsz, hidden_dim = hidden_states.shape
     assert bsz % rollout_n == 0, f"bsz ({bsz}) must be divisible by rollout_n ({rollout_n})"
     grouped = hidden_states.reshape(-1, rollout_n, hidden_dim) # (group_n, rollout_n, dim)
-    label_pos = torch.tensor(range(bsz))%rollout_n
+    label_pos = (torch.tensor(range(bsz))%rollout_n).view(-1,1)
     return grouped.repeat_interleave(rollout_n, dim=0).reshape(bsz,rollout_n,hidden_dim), label_pos
 
 class RayPPOTrainer(object):
@@ -428,6 +428,7 @@ class RayPPOTrainer(object):
     def _validate(self):
         reward_tensor_lst = []
         data_source_lst = []
+        data_source_idx_lst = []
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
             # test_batch = test_batch.to('cuda')
@@ -460,19 +461,29 @@ class RayPPOTrainer(object):
             # evaluate using reward_function
             # for certain reward function (e.g. sandbox), the generation can overlap with reward
             reward_tensor = self.val_reward_fn(test_batch)
+            # print(f"reward_tensor.shape={reward_tensor.shape}")
 
             reward_tensor_lst.append(reward_tensor)
+            # print(f"non_tensor_batch:{test_batch.non_tensor_batch.keys()}")
             data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
+            data_source_idx_lst.append(test_batch.non_tensor_batch['index'])
 
         reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
+        reward_tensor = reward_tensor.reshape(-1, n_val_samples).any(dim=-1)
         data_sources = np.concatenate(data_source_lst, axis=0)
+        data_source_idx = np.concatenate(data_source_idx_lst, axis=0)
+        # print("data_source:",data_sources)
+        # print("data_idx:",data_source_idx.reshape(-1, n_val_samples))
+        # print("data_idx.sum", data_source_idx.sum(axis=-1))
+        # print("reward_tensor.reshape", reward_tensor.reshape(-1, n_val_samples))
+        # print("reward_tensor.sum", reward_tensor)
         # evaluate test_score based on data source
         data_source_reward = {}
         for i in range(reward_tensor.shape[0]):
             data_source = data_sources[i]
             if data_source not in data_source_reward:
                 data_source_reward[data_source] = []
-            data_source_reward[data_source].append(reward_tensor[i].item())
+            data_source_reward[data_source].append(reward_tensor[i])
 
         metric_dict = {}
         average_score = []
@@ -723,11 +734,18 @@ class RayPPOTrainer(object):
                                     hidden_states=old_log_prob.batch['old_hidden_states'], 
                                     rollout_n=self.config.actor_rollout_ref.rollout.n)
                                 # print("####reward_tensor:", reward_tensor.shape)
-                                # print(f"###score:{reward_tensor.sum(dim=1)}")
+    
                             else:
                                 old_log_prob.batch['label_pos'] = None
                             batch = batch.union(old_log_prob)
-                            # print("###########datas:",batch.batch)
+                            print("###########datas:",batch.batch)
+                            print("##0##:",batch.batch['old_hidden_states'][0])
+                            print("##1##:",batch.batch['old_hidden_states'][1])
+                            print("##6##:",batch.batch['old_hidden_states'][6])
+                            print("##7##:",batch.batch['old_hidden_states'][7])
+                            print("##8##:",batch.batch['old_hidden_states'][8])
+                            print("##9##:",batch.batch['old_hidden_states'][9])
+                            print("####:",batch.batch['label_pos'])
                             # print(f"***{self.tokenizer.batch_decode(batch.batch['input_ids'][:,:1024], skip_special_tokens=True)}")
 
                         if self.use_reference_policy:
@@ -798,4 +816,23 @@ class RayPPOTrainer(object):
                         logger.log(data=val_metrics, step=self.global_steps)
                     return
 
-    
+    def eval(self):
+        from verl.utils.tracking import Tracking
+        from omegaconf import OmegaConf
+
+        logger = Tracking(project_name=self.config.trainer.project_name,
+                          experiment_name=self.config.trainer.experiment_name,
+                          default_backend=self.config.trainer.logger,
+                          config=OmegaConf.to_container(self.config, resolve=True))
+
+        
+        pass_at_n = [1,2,4,8,16,32]
+        if self.val_reward_fn is not None:
+            for n_val in pass_at_n:
+                self.config.actor_rollout_ref.rollout.n_val = n_val
+                val_metrics = self._validate()
+                pprint(f'Initial validation metrics: {val_metrics}')
+                # if self.config.trainer.get('val_only', False):
+                logger.log(data=val_metrics, step=n_val)   
+        logger.log(data=val_metrics, step=n_val)  
+        return
