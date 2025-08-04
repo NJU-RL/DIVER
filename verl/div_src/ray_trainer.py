@@ -313,11 +313,11 @@ def _timer(name: str, timing_raw: Dict[str, float]):
     timing_raw[name] = timer.last
 
 
-def repeat_by_groups(hidden_states:torch.Tensor, rollout_n):
+def repeat_by_groups(hidden_states, rollout_n):
     bsz, hidden_dim = hidden_states.shape
     assert bsz % rollout_n == 0, f"bsz ({bsz}) must be divisible by rollout_n ({rollout_n})"
     grouped = hidden_states.reshape(-1, rollout_n, hidden_dim) # (group_n, rollout_n, dim)
-    label_pos = (torch.tensor(range(bsz))%rollout_n).view(-1,1)
+    label_pos = torch.tensor(range(bsz))%rollout_n # （bsz,）
     return grouped.repeat_interleave(rollout_n, dim=0).reshape(bsz,rollout_n,hidden_dim), label_pos
 
 class RayPPOTrainer(object):
@@ -470,9 +470,9 @@ class RayPPOTrainer(object):
 
         reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
         reward_tensor = reward_tensor.reshape(-1, n_val_samples).any(dim=-1)
-        data_sources = np.concatenate(data_source_lst, axis=0)
+        data_sources = np.concatenate(data_source_lst, axis=0).reshape(-1, n_val_samples)[:,0]
         data_source_idx = np.concatenate(data_source_idx_lst, axis=0)
-        # print("data_source:",data_sources)
+        # print("data_source:",data_sources.shape,data_sources.reshape(-1, n_val_samples)[:,0].shape,data_sources.reshape(-1, n_val_samples)[:,0])
         # print("data_idx:",data_source_idx.reshape(-1, n_val_samples))
         # print("data_idx.sum", data_source_idx.sum(axis=-1))
         # print("reward_tensor.reshape", reward_tensor.reshape(-1, n_val_samples))
@@ -729,24 +729,16 @@ class RayPPOTrainer(object):
                         # recompute old_log_probs
                         with _timer('old_log_prob', timing_raw):
                             old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
-                            if self.config.actor_rollout_ref.actor.use_div:
-                                old_log_prob.batch['old_hidden_states'], old_log_prob.batch['label_pos']=repeat_by_groups(
-                                    hidden_states=old_log_prob.batch['old_hidden_states'], 
-                                    rollout_n=self.config.actor_rollout_ref.rollout.n)
-                                # print("####reward_tensor:", reward_tensor.shape)
-    
-                            else:
-                                old_log_prob.batch['label_pos'] = None
                             batch = batch.union(old_log_prob)
-                            print("###########datas:",batch.batch)
-                            print("##0##:",batch.batch['old_hidden_states'][0])
-                            print("##1##:",batch.batch['old_hidden_states'][1])
-                            print("##6##:",batch.batch['old_hidden_states'][6])
-                            print("##7##:",batch.batch['old_hidden_states'][7])
-                            print("##8##:",batch.batch['old_hidden_states'][8])
-                            print("##9##:",batch.batch['old_hidden_states'][9])
-                            print("####:",batch.batch['label_pos'])
-                            # print(f"***{self.tokenizer.batch_decode(batch.batch['input_ids'][:,:1024], skip_special_tokens=True)}")
+
+                        if self.config.actor_rollout_ref.actor.use_div:
+                            batch.batch['old_hidden_states'], batch.batch['label_pos']=repeat_by_groups(batch.batch['old_hidden_states'], self.config.actor_rollout_ref.rollout.n)
+                            print("####reward_tensor:", reward_tensor.shape)
+                            print("####reward_tensor:", reward_tensor)
+                            print("####reward_tensor:", reward_tensor.reshape)
+
+                        else:
+                            old_log_prob.batch['label_pos'] = None
 
                         if self.use_reference_policy:
                             # compute reference log_prob
@@ -826,7 +818,7 @@ class RayPPOTrainer(object):
                           config=OmegaConf.to_container(self.config, resolve=True))
 
         
-        pass_at_n = [1,2,4,8,16,32]
+        pass_at_n = [16,32] * 4
         if self.val_reward_fn is not None:
             for n_val in pass_at_n:
                 self.config.actor_rollout_ref.rollout.n_val = n_val

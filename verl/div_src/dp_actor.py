@@ -260,7 +260,7 @@ class DataParallelPPOActor(BasePPOActor):
             label_pos: [batch_size]
             
         """
-        # valid_indices = cl_mask.bool()
+        valid_indices = cl_mask.bool()
         # if not valid_indices.any():
         #     return torch.tensor(0.0, device=hidden_states.device, requires_grad=True)
 
@@ -268,14 +268,12 @@ class DataParallelPPOActor(BasePPOActor):
         # hidden_states = hidden_states[valid_indices]
         # old_hidden_states = old_hidden_states[valid_indices]
         # label_pos = label_pos[valid_indices]
+    
+        hidden_states_norm = nn.functional.normalize(hidden_states, p=2, dim=1)
+        old_hidden_states_norm = nn.functional.normalize(old_hidden_states, p=2, dim=2)
 
-        hidden_states = nn.functional.normalize(hidden_states, p=2, dim=1)
-        old_hidden_states = nn.functional.normalize(old_hidden_states, p=2, dim=2)
-        logits = torch.bmm(old_hidden_states, hidden_states.unsqueeze(dim=-1)) #(bsz, 1, rollout_n)
-        # logits = torch.bmm(hidden_states.unsqueeze(dim=1), old_hidden_states.transpose(1,2)) #(bsz, 1, rollout_n)
-        print(f"logits:{logits.squeeze(-1)}, label:{label_pos}")
-        
-        loss = self.cross_entropy_loss(logits.squeeze(-1), label_pos.view(-1).to(logits.device))
+        logits = torch.bmm(hidden_states_norm.unsqueeze(dim=1), old_hidden_states_norm.transpose(1,2)) #(bsz, 1, rollout_n)
+        loss = self.cross_entropy_loss(logits.squeeze(1), label_pos.to(logits.device))
         # print(f"cl_loss:{loss}, cl_mask:{cl_mask}")
         
         return loss

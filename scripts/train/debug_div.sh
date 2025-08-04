@@ -48,7 +48,7 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.grad_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.temperature=1.0 \
     actor_rollout_ref.rollout.val_temperature=0.6 \
