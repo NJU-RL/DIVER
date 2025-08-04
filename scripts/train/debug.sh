@@ -51,7 +51,7 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.temperature=1.0 \
-    actor_rollout_ref.rollout.val_temperature=0.6 \
+    actor_rollout_ref.rollout.val_temperature=0.4 \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.85 \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.n_total=12 \

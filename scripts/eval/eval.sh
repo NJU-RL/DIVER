@@ -6,18 +6,11 @@ set -x
 export VLLM_ATTENTION_BACKEND=XFORMERS
 ray stop
 
-DATASET=("eval.passn")
 # Parse command line arguments
-
-
 while [[ $# -gt 0 ]]; do
     case $1 in
         --model)
             MODEL_PATH="$2"
-            shift 2
-            ;;
-        --dataset)
-            DATASET="$2"
             shift 2
             ;;
         *)
@@ -31,13 +24,12 @@ if [ -z "$MODEL_PATH" ]; then
     MODEL_PATH="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 fi
 
-
 # Train over a single node, 8 A100-80GB GPUs.
 python3 -m verl.div_src.eval_rl \
     algorithm.adv_estimator=grpo \
     data.train_files=dataset/openr1.parquet \
     data.val_files=/mnt/petrelfs/share_data/huzican/dataset/eval.passn.parquet \
-    data.train_batch_size=128 \
+    data.train_batch_size=32 \
     data.val_batch_size=512 \
     data.max_prompt_length=1024 \
     data.max_response_length=8192 \
@@ -62,16 +54,17 @@ python3 -m verl.div_src.eval_rl \
     actor_rollout_ref.rollout.val_temperature=0.6 \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.85 \
     actor_rollout_ref.rollout.n=8 \
-    actor_rollout_ref.rollout.n_val=2 \
+    actor_rollout_ref.rollout.n_val=1 \
     +actor_rollout_ref.actor.use_div=True \
-    +actor_rollout_ref.actor.div_coeff=0.01 \
+    +actor_rollout_ref.actor.div_coeff=0.1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.1 \
     trainer.critic_warmup=0 \
-    trainer.logger=['console','wandb'] \
+    trainer.logger=['console'] \
     trainer.project_name='eval_div' \
-    trainer.experiment_name='eval_clp_0_28_val_t_0_6_ckpt250' \
-    +trainer.val_before_train=True \
+    trainer.experiment_name='baseline' \
+    +trainer.val_before_train=False \
+    +trainer.val_only=True \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=50 \

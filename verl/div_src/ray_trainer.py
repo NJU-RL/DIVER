@@ -95,7 +95,7 @@ class ResourcePoolManager:
 import torch
 from verl.utils.torch_functional import masked_mean
 
-def group_hidden_states(hidden_states: torch.tensor, rollout_n=8):
+def group_hidden_states(hidden_states: torch.tensor, seq_level_rewards: torch.tensor,rollout_n=8):
     """
     reorder the hidden states by group: (bsz, hidden_dim) -> (bsz, rollout_n, hidden_dim)
     """
@@ -104,6 +104,8 @@ def group_hidden_states(hidden_states: torch.tensor, rollout_n=8):
 
     group_num = bsz // rollout_n
     grouped = hidden_states.reshape(group_num, rollout_n, hidden_dim)
+    seq_level_rewards = seq_level_rewards.unsqueeze(-1)
+    grouped_rewards = seq_level_rewards.reshape(group_num, rollout_n, 1)
 
     # result = torch.zeros(bsz, rollout_n, hidden_dim, device=hidden_states.device)
 
@@ -119,22 +121,27 @@ def group_hidden_states(hidden_states: torch.tensor, rollout_n=8):
     batch_indices = indices.unsqueeze(0).expand(group_num, -1, -1)
 
     expanded = grouped.unsqueeze(1).expand(-1, rollout_n, -1, -1)
+    expanded_rewards = grouped_rewards.unsqueeze(1).expand(-1, rollout_n, -1, -1)
 
     gather_indices = batch_indices.unsqueeze(-1).expand(-1, -1, -1, hidden_dim)
+    gather_indices_rewards = batch_indices.unsqueeze(-1).expand(-1, -1, -1, 1)
 
     gathered = torch.gather(expanded, dim=2, index=gather_indices)
+    gathered_rewards = torch.gather(expanded_rewards, dim=2, index=gather_indices_rewards)
 
     # print(f'gathered shape: {gathered.shape}')
 
     result = gathered.reshape(bsz, rollout_n, hidden_dim)
+    result_rewards = gathered_rewards.reshape(bsz, rollout_n, 1)
 
 
-    return result
+    return result, result_rewards.squeeze(-1)
 
 def group_hidden_states_order(hidden_states: torch.tensor, rollout_n=8):
     bsz, hidden_dim = hidden_states.shape
     grouped = hidden_states.reshape(-1, rollout_n, hidden_dim)
-    return grouped.repeat_interleave(rollout_n, dim=0).reshape(bsz,rollout_n,hidden_dim)
+    label_pos = torch.tensor(range(bsz))%rollout_n
+    return grouped.repeat_interleave(rollout_n, dim=0).reshape(bsz,rollout_n,hidden_dim), label_pos
 
 
 def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, kl_penalty='kl'):
@@ -523,10 +530,74 @@ class RayPPOTrainer(object):
             data_source_reward[data_source].append(reward_tensor[i].item())
 
         metric_dict = {}
+        average_score = []
         for data_source, rewards in data_source_reward.items():
             metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
+            average_score.append(metric_dict[f'val/test_score/{data_source}'])
+        metric_dict[f'val/test_score/average'] = np.mean(average_score)
 
         return metric_dict
+
+
+    # def _validate(self):
+    #     reward_tensor_lst = []
+    #     data_source_lst = []
+    #     for test_data in self.val_dataloader:
+    #         test_batch = DataProto.from_single_dict(test_data)
+    #         # test_batch = test_batch.to('cuda')
+
+    #         # we only do validation on rule-based rm
+    #         if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
+    #             return {}
+
+    #         n_val_samples = self.config.actor_rollout_ref.rollout.n_val
+    #         test_batch = test_batch.repeat(repeat_times=n_val_samples, interleave=True)
+    #         test_gen_batch = test_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
+    #         test_gen_batch.meta_info = {
+    #             'eos_token_id': self.tokenizer.eos_token_id,
+    #             'pad_token_id': self.tokenizer.pad_token_id,
+    #             'recompute_log_prob': False,
+    #             'do_sample': False,
+    #             'validate': True,
+    #         }
+
+    #         # pad to be divisible by dp_size
+    #         test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
+    #         test_gen_batch_padded.meta_info['val_temperature'] = self.config.actor_rollout_ref.rollout.val_temperature
+    #         test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
+    #         # unpad
+    #         test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
+    #         print('Validation: Generation end.')
+
+    #         test_batch = test_batch.union(test_output_gen_batch)
+
+    #         # evaluate using reward_function
+    #         # for certain reward function (e.g. sandbox), the generation can overlap with reward
+    #         reward_tensor = self.val_reward_fn(test_batch)
+
+    #         reward_tensor_lst.append(reward_tensor)
+    #         data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))        
+
+    #     reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
+    #     reward_tensor = reward_tensor.reshape(-1, n_val_samples).any(dim=-1) # test pass@N
+    #     data_sources = np.concatenate(data_source_lst, axis=0).reshape(-1, n_val_samples)[:,0]
+    #     # data_sources = np.concatenate(data_source_lst, axis=0)
+    #     # evaluate test_score based on data source
+    #     data_source_reward = {}
+    #     for i in range(reward_tensor.shape[0]):
+    #         data_source = data_sources[i]
+    #         if data_source not in data_source_reward:
+    #             data_source_reward[data_source] = []
+    #         data_source_reward[data_source].append(reward_tensor[i].item())
+
+    #     metric_dict = {}
+    #     average_score = []
+    #     for data_source, rewards in data_source_reward.items():
+    #         metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
+    #         average_score.append(metric_dict[f'val/test_score/{data_source}'])
+    #     metric_dict[f'val/test_score/average'] = np.mean(average_score)
+
+    #     return metric_dict
 
     def init_workers(self):
         """Init resource pool and worker group"""
@@ -819,9 +890,11 @@ class RayPPOTrainer(object):
                         with _timer('old_log_prob', timing_raw):
                             old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
                             batch = batch.union(old_log_prob)
-                        print(f'old hidden states: {batch.batch["old_hidden_states"].shape}')
-                        batch.batch['old_hidden_states'] = group_hidden_states_order(batch.batch['old_hidden_states'])
-                        print(f'grouped old hidden states: {batch.batch["old_hidden_states"].shape}')
+                        # print(f'old hidden states: {batch.batch["old_hidden_states"].shape}')
+                        batch.batch['old_hidden_states'], batch.batch['group_rewards'] = group_hidden_states(batch.batch['old_hidden_states'], batch.batch['token_level_scores'].sum(dim=1))
+                        # print(f'group rewards: {batch.batch["group_rewards"].shape}')
+                        # batch.batch['old_hidden_states'], batch.batch['labels'] = group_hidden_states_order(batch.batch['old_hidden_states'])
+                        # print(f'grouped old hidden states: {batch.batch["old_hidden_states"].shape}')
 
                         if self.use_reference_policy:
                             # compute reference log_prob
@@ -901,8 +974,8 @@ class RayPPOTrainer(object):
                         self.global_steps % self.config.trainer.test_freq == 0:
                         with _timer('testing', timing_raw):
                             val_metrics: dict = self._validate()
-                        if 'avg_score' not in val_metrics:
-                            val_metrics['avg_score'] = np.mean([val_metrics[key] for key in val_metrics if key.startswith('val/test_score/')])
+                        # if 'avg_score' not in val_metrics:
+                        #     val_metrics['avg_score'] = np.mean([val_metrics[key] for key in val_metrics if key.startswith('val/test_score/')])
                         # if 'diversity/avg_equ_div' not in val_metrics:
                         #     val_metrics['diversity/avg_euq_div'] = np.mean(avg_diversity)
                         metrics.update(val_metrics)
@@ -933,3 +1006,34 @@ class RayPPOTrainer(object):
                         pprint(f'Final validation metrics: {val_metrics}')
                         logger.log(data=val_metrics, step=self.global_steps)
                     return
+
+    def eval(self):
+        from verl.utils.tracking import Tracking
+        from omegaconf import OmegaConf
+
+        logger = Tracking(project_name=self.config.trainer.project_name,
+                          experiment_name=self.config.trainer.experiment_name,
+                          default_backend=self.config.trainer.logger,
+                          config=OmegaConf.to_container(self.config, resolve=True))
+
+        
+        pass_at_n = [1,2,4,8,16,32]
+
+        if self.val_reward_fn is not None:
+            for n_val in pass_at_n:
+                avg_metric = {}
+                for i in range(3):
+                    self.config.actor_rollout_ref.rollout.n_val = n_val
+                    val_metrics = self._validate()
+                    pprint(f'Initial validation metrics: {val_metrics}')
+                    # if self.config.trainer.get('val_only', False):
+                    logger.log(data=val_metrics, step=n_val)
+                    for data_source, score in val_metrics.items():
+                        if data_source not in avg_metric:
+                            avg_metric[f'{data_source}'] = []
+                        avg_metric[f'{data_source}'].append(score)
+
+                for data_source, score in avg_metric.items():
+                    print(f'{data_source}: {np.mean(score):.3f} pm {np.std(score):.3f}')
+        logger.log(data=val_metrics, step=n_val)  
+        return

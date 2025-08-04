@@ -144,7 +144,7 @@ class DataParallelPPOActor(BasePPOActor):
                                                 indices=indices,
                                                 batch=batch_size,
                                                 seqlen=seqlen)
-                    last_indices = torch.clamp(attention_mask[:,-response_length:].sum(dim=1)-1, min=0)
+                    last_indices = torch.clamp(attention_mask[:,-response_length:].sum(dim=1)-2, min=0)
                     batch_indices = torch.arange(batch_size, device=full_hidden_states.device)
                     last_hidden_states = full_hidden_states[:,-response_length:][batch_indices, last_indices] # (bsz, hidden_dim)
                     
@@ -340,7 +340,40 @@ class DataParallelPPOActor(BasePPOActor):
         
         return total_loss
     
-    def _compute_group_constrastive_loss(self, old_hidden_states: torch.Tensor, hidden_states: torch.Tensor, temperature=1.0):
+    def contrastive_loss(self, hidden_states, old_hidden_states, labels):
+        """
+        Args: 
+            hidden_states: [batch_size, hidden_dim]
+            old_hidden_states: [batch_size, rollout_n, hidden_dim]
+            label_pos: [batch_size]
+            
+        # """
+        # valid_indices = cl_mask.bool()
+        # if not valid_indices.any():
+        #     return torch.tensor(0.0, device=hidden_states.device, requires_grad=True)
+
+        # # filter invalid sampling
+        # hidden_states = hidden_states[valid_indices]
+        # old_hidden_states = old_hidden_states[valid_indices]
+        # label_pos = label_pos[valid_indices]
+
+        bsz, _ = hidden_states.shape
+
+        hidden_states = nn.functional.normalize(hidden_states, p=2, dim=1)
+        old_hidden_states = nn.functional.normalize(old_hidden_states, p=2, dim=2)
+        
+        logits = torch.bmm(hidden_states.unsqueeze(dim=1), old_hidden_states.transpose(1,2)) #(bsz, 1, rollout_n)
+
+        print(f'logits: {logits}')
+        print(f'labels: {labels}')
+        labels = torch.zeros(bsz, dtype=torch.long, device=logits.device)
+        loss = nn.functional.cross_entropy(logits, labels)
+        # loss = self.cross_entropy_loss(logits.squeeze(1), label_pos.to(logits.device))
+        # print(f"cl_loss:{loss}, cl_mask:{cl_mask}")
+        
+        return loss
+    
+    def _compute_group_contrastive_loss(self, old_hidden_states: torch.Tensor, hidden_states: torch.Tensor, cl_mask, temperature=1.):
         """
         Compute logits for constrastive loss within a group.
 
@@ -351,7 +384,18 @@ class DataParallelPPOActor(BasePPOActor):
         Return:
             loss
         """
-        bsz, _, _ = old_hidden_states.shape
+        # bsz, _, _ = old_hidden_states.shape
+
+        valid_indices = cl_mask.bool()
+        if not valid_indices.any():
+            return torch.tensor(0.0)
+        
+        old_hidden_states = old_hidden_states[valid_indices]
+        hidden_states = hidden_states[valid_indices]
+
+        # print(f'valid indices shape: {valid_indices.shape}')
+        # print(f'hidden states shape: {old_hidden_states[valid_indices].shape}')
+
 
         old_hidden_states_norm = torch.nn.functional.normalize(old_hidden_states, p=2, dim=2)
         hidden_states_norm = torch.nn.functional.normalize(hidden_states, p=2, dim=2)
@@ -360,37 +404,10 @@ class DataParallelPPOActor(BasePPOActor):
         # logits = torch.bmm(hidden_states, old_hidden_states.transpose(1, 2)) # [bsz, 1, rollout_n]
  
         logits = logits.squeeze(-1) / temperature  # [bsz, rollout_n]
-        labels = torch.zeros(bsz, dtype=torch.long, device=logits.device)
+        labels = torch.zeros(old_hidden_states.shape[0], dtype=torch.long, device=logits.device)
 
-        for i in range(bsz):
-            for j in range(8):
-                is_equal = torch.allclose(
-                    old_hidden_states_norm[i, j],
-                    hidden_states_norm[i, 0],
-                    rtol=1e-5
-                )
-                if is_equal:
-                    print(f"Batch {i}, Vector {j}: Vectors are equal")
+        # print(f'logits shape: {logits.shape}')
 
-        # output_str = []
-        # for i in range(bsz):
-        #     output_str.append(f'========== batch {i} ===========')
-        #     output_str.append(f'hidden states: {hidden_states_norm[i][0][:5].tolist()}')
-        #     for j in range(8):
-        #         output_str.append(f'old hidden states {j}: {old_hidden_states_norm[i][j][:5].tolist()}')
-
-        # output_str.append(f'logits: {logits}')
-        # print('\n'.join(output_str))
-
-            
-        # print('logits:')
-        # print(logits)
-        # for i in range(bsz):
-        #     print(f'batch num {i}: {logits[i]}')
-
-        # loss = 0
-        # for i in range(bsz):
-        #     loss += nn.functional.cross_entropy(logits[i].unsqueeze(0), 0)
         loss = nn.functional.cross_entropy(logits, labels)
 
         return loss
@@ -406,7 +423,7 @@ class DataParallelPPOActor(BasePPOActor):
         self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
 
-        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages', 'old_hidden_states']
+        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages', 'old_hidden_states', 'token_level_rewards', 'group_rewards']
         if self.config.use_kl_loss:
             select_keys.append('ref_log_prob')
             
@@ -448,6 +465,8 @@ class DataParallelPPOActor(BasePPOActor):
                     old_log_prob = data['old_log_probs']
                     advantages = data['advantages']
                     old_hidden_states = data['old_hidden_states']
+                    cl_mask = 1 - data['token_level_rewards'].sum(dim=1)
+                    # labels = data['labels']
 
                     # from transformers import AutoModelForCausalLM, AutoTokenizer
                     # model_path = "/mnt/petrelfs/share_data/huzican/Qwen2.5-7B-orz-tok"
@@ -481,21 +500,13 @@ class DataParallelPPOActor(BasePPOActor):
                     entropy_coeff = self.config.entropy_coeff
 
                     entropy, log_prob, hidden_states = self._forward_micro_batch(micro_batch=data, temperature=temperature)
-
-                    # print('old hidden states:')
-                    # for i in range(8):
-                    #     print(f'num {i}: {torch.mean(old_hidden_states[1][i])}')
-                    # print(f'hidden state: {torch.mean(hidden_states[1])}')
-
+                    # constrastive_loss = self.contrastive_loss(hidden_states, old_hidden_states, labels)
                     hidden_states = hidden_states.unsqueeze(dim=1)
 
+                    # print(f'cl mask: {cl_mask}')
 
-                    # print(f'old hidden states shape: {old_hidden_states.shape}')
-                    # print(f'old hidden states grad: {old_hidden_states.requires_grad}')
-                    # print(f'hidden_states shape: {hidden_states.shape}')
-                    # print(f'hidden_states grad: {hidden_states.requires_grad}')
-
-                    constrastive_loss = self._compute_group_constrastive_loss(old_hidden_states, hidden_states)
+                    contrastive_loss = self._compute_group_contrastive_loss(old_hidden_states, hidden_states, cl_mask)
+                    # print(f'labels: {labels}')
                     # constrastive_loss = self.disp_loss(old_hidden_states, hidden_states)
 
                     # print(f'constrast loss: {constrastive_loss}')
@@ -510,14 +521,16 @@ class DataParallelPPOActor(BasePPOActor):
                                                                                 log_prob=log_prob,
                                                                                 advantages=advantages,
                                                                                 eos_mask=response_mask,
-                                                                                cliprange=clip_ratio)
+                                                                                cliprange=clip_ratio,
+                                                                                cliprangehigh=clip_ratio_high)
                     # print(f'pg loss shape: {pg_loss.shape}')
                     # print(f'pg clip shape: {pg_clipfrac.shape}')
                     # compute entropy loss from entropy
                     entropy_loss = verl_F.masked_mean(entropy, response_mask)
 
                     # compute policy loss
-                    policy_loss = pg_loss - entropy_loss * entropy_coeff 
+                    print(f'contrastive loss: {contrastive_loss}')
+                    policy_loss = pg_loss - entropy_loss * entropy_coeff + 0.01 * contrastive_loss
                     if self.config.use_kl_loss:
                         ref_log_prob = data['ref_log_prob']
                         # compute kl loss
@@ -537,7 +550,7 @@ class DataParallelPPOActor(BasePPOActor):
                     data = {
                         'actor/entropy_loss': entropy_loss.detach().item(),
                         'actor/pg_loss': pg_loss.detach().item(),
-                        # 'actor/constrastive_loss': constrastive_loss.detach().item(),
+                        'actor/contrastive_loss': contrastive_loss.detach().item(),
                         'actor/pg_clipfrac': pg_clipfrac.detach().item(),
                         'actor/ppo_kl': ppo_kl.detach().item(),
                     }
