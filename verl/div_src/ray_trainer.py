@@ -313,12 +313,12 @@ def _timer(name: str, timing_raw: Dict[str, float]):
     timing_raw[name] = timer.last
 
 
-def repeat_by_groups(hidden_states, rollout_n):
+def repeat_by_groups(hidden_states, rollout_n=8):
     bsz, hidden_dim = hidden_states.shape
     assert bsz % rollout_n == 0, f"bsz ({bsz}) must be divisible by rollout_n ({rollout_n})"
     grouped = hidden_states.reshape(-1, rollout_n, hidden_dim) # (group_n, rollout_n, dim)
     label_pos = torch.tensor(range(bsz))%rollout_n # （bsz,）
-    return grouped.repeat_interleave(rollout_n, dim=0).reshape(bsz,rollout_n,hidden_dim), label_pos
+    return grouped.repeat_interleave(rollout_n, dim=0), label_pos
 
 class RayPPOTrainer(object):
     """
@@ -732,10 +732,16 @@ class RayPPOTrainer(object):
                             batch = batch.union(old_log_prob)
 
                         if self.config.actor_rollout_ref.actor.use_div:
-                            batch.batch['old_hidden_states'], batch.batch['label_pos']=repeat_by_groups(batch.batch['old_hidden_states'], self.config.actor_rollout_ref.rollout.n)
-                            print("####reward_tensor:", reward_tensor.shape)
-                            print("####reward_tensor:", reward_tensor)
-                            print("####reward_tensor:", reward_tensor.reshape)
+                            # print("start:",old_log_prob.batch['old_hidden_states'])
+                            batch.batch['old_hidden_states'], batch.batch['label_pos']=repeat_by_groups(old_log_prob.batch['old_hidden_states'])
+                            # print("end:",batch.batch['old_hidden_states'])
+                            score = reward_tensor.sum(dim=1).reshape(-1,self.config.actor_rollout_ref.rollout.n) # (n_group, rollout_n)
+                            # print("####reward_tensor:", score.shape)
+                            # print("####reward_tensor:", score)
+                            # score = (~score.any(dim=-1)).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0) # (bsz, )
+                            # print("####reward_tensor:", score.shape)
+                            batch.batch['solve_none_flag'] = (~score.any(dim=-1)).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0)
+                            # print("####reward_tensor2:",score)
 
                         else:
                             old_log_prob.batch['label_pos'] = None
