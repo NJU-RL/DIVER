@@ -193,3 +193,35 @@ def compute_reinforce_plus_plus_outcome_advantage(token_level_rewards: torch.Ten
         advantages = advantages * eos_mask
 
     return advantages, returns
+
+
+def compute_div_adv(div_reward: torch.Tensor,
+                    eos_mask: torch.Tensor,
+                    rollout_n:int =8,
+                    epsilon: float = 1e-6,
+                    use_std: bool = True):
+    """
+    Compute advantage for GRPO, operating only on Outcome reward 
+    (with only one scalar reward for each response).
+    Args:
+        div_reward: (bsz*rollout_n)
+        eos_mask: (bsz*rollout_n, response_length)
+    Returns:
+        advantages: (bs*rollout_n, response_length)
+        Returns: (bs*rollout_n, response_length)
+    """
+    print("div_reward.shape:",div_reward.shape)
+    div_reward = div_reward.reshape(-1, rollout_n)
+    response_length = eos_mask.shape[-1]
+    mean = div_reward.mean(dim=1).unsqueeze(1).repeat_interleave(rollout_n,dim=1) # (bsz, rollout_n)
+    std = div_reward.std(dim=1).unsqueeze(1).repeat_interleave(rollout_n,dim=1)
+
+    if use_std:
+        scores = (div_reward - mean) / (std + epsilon)
+    else:
+        scores = (div_reward - mean) # (bsz, rollout_n)
+
+    # (bsz*rollout_n, response_length)
+    scores = scores.reshape(-1).unsqueeze(-1).tile([1, response_length]) * eos_mask 
+
+    return scores, scores

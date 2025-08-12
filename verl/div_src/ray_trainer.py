@@ -147,6 +147,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
     elif adv_estimator == 'grpo':
         # breakpoint()
         token_level_rewards = data.batch['token_level_rewards']
+        div_reward = data.batch['div_reward']
         index = data.non_tensor_batch['uid']
         responses = data.batch['responses']
         response_length = responses.size(-1)
@@ -155,8 +156,11 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         advantages, returns = calculate_adv.compute_grpo_outcome_advantage(token_level_rewards=token_level_rewards,
                                                                         eos_mask=response_mask,
                                                                         index=index)
+        div_adv, _ = calculate_adv.compute_div_adv(div_reward=div_reward,
+                                                             eos_mask=response_mask)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
+        data.batch['div_advantages'] = div_adv
     elif adv_estimator == 'reinforce_plus_plus':
         token_level_rewards = data.batch['token_level_rewards']
         responses = data.batch['responses']
@@ -200,6 +204,7 @@ def compute_data_metrics(batch, use_critic=True):
     sequence_reward = batch.batch['token_level_rewards'].sum(-1)
 
     advantages = batch.batch['advantages']
+    div_advantages = batch.batch['div_advantages']
     returns = batch.batch['returns']
 
     max_response_length = batch.batch['responses'].shape[-1]
@@ -214,6 +219,7 @@ def compute_data_metrics(batch, use_critic=True):
     response_length = response_info['response_length']
 
     valid_adv = torch.masked_select(advantages, response_mask)
+    valid_div_adv = torch.masked_select(div_advantages, response_mask)
     valid_returns = torch.masked_select(returns, response_mask)
 
     if use_critic:
@@ -244,6 +250,12 @@ def compute_data_metrics(batch, use_critic=True):
             torch.max(valid_adv).detach().item(),
         'critic/advantages/min':
             torch.min(valid_adv).detach().item(),
+        'critic/div_adv/mean':
+            torch.mean(valid_div_adv).detach().item(),
+        'critic/div_adv/max':
+            torch.max(valid_div_adv).detach().item(),
+        'critic/div_adv/min':
+            torch.min(valid_div_adv).detach().item(),
         # returns
         'critic/returns/mean':
             torch.mean(valid_returns).detach().item(),
@@ -319,6 +331,40 @@ def repeat_by_groups(hidden_states, rollout_n=8):
     grouped = hidden_states.reshape(-1, rollout_n, hidden_dim) # (group_n, rollout_n, dim)
     label_pos = torch.tensor(range(bsz))%rollout_n # （bsz,）
     return grouped.repeat_interleave(rollout_n, dim=0), label_pos
+
+def repeat_by_batch(hidden_states, rollout_n=8):
+    """    
+    Args:
+        hidden_states: (bsz, dim),bsz = n_group * rollout_n
+    Returns:
+        (bsz, (n_group-1)*rollout_n, dim)
+    """
+    bsz, hidden_dim = hidden_states.shape
+    n_group = bsz // rollout_n
+    
+
+    grouped = hidden_states.view(n_group, rollout_n, hidden_dim)
+ 
+    # (n_group, n_group, rollout_n, hidden_dim)
+    all_groups = grouped.unsqueeze(0).repeat(n_group, 1, 1, 1)
+    
+    # (n_group, n_group)
+    group_mask = ~torch.eye(n_group, dtype=torch.bool, device=hidden_states.device)
+    
+    # (n_group, n_group-1, rollout_n, hidden_dim)
+    masked_groups = all_groups[group_mask].view(n_group, (n_group-1), rollout_n, hidden_dim)
+    
+    # (n_group, (n_group-1)*rollout_n, hidden_dim)
+    reshaped = masked_groups.reshape(n_group, (n_group-1)*rollout_n, hidden_dim)
+
+    random_indices = torch.randint(0, rollout_n, (bsz,), device=hidden_states.device)
+    group_indices = torch.arange(bsz) // rollout_n
+
+    # (bsz, (n_group-1)*rollout_n, hidden_dim) + (bsz, 1, hidden_dim) = (bsz, 1+(n_group-1)*n, hidden_dim)
+    result = torch.cat([grouped[group_indices, random_indices].unsqueeze(1), reshaped.repeat_interleave(rollout_n, dim=0)],dim=1)
+    
+    
+    return result
 
 class RayPPOTrainer(object):
     """
@@ -655,6 +701,9 @@ class RayPPOTrainer(object):
                         group = response_str[group_start:group_end]
                         div_belu.append(calculate_belu_matrix(group))
                         div_equ.append(calculate_equation_matrix(group))
+                    # print("###div_belu:", np.array(div_belu).shape,len(gen_batch.batch))
+                    
+                    # print("###div_reward:", div_belu.shape)
                     metrics['div_metric/equ'] = np.mean(div_equ)
                     metrics['div_metric/belu'] = np.mean(div_belu)
                     # print(f"belu:{metrics['div_metric/belu']}; equ:{metrics['div_metric/equ']}")
@@ -662,6 +711,7 @@ class RayPPOTrainer(object):
                     batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],dtype=object)
                 
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                    batch.batch['div_reward'] = 1-torch.tensor(np.array(div_belu).reshape(-1))
                 
                     batch = batch.union(gen_batch_output)
 
@@ -679,6 +729,7 @@ class RayPPOTrainer(object):
 
                         reward_tensor = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
+                        # print(reward_tensor.shape)
 
                         # Rejection sampling based on rewards
                         # Group rewards by uid
@@ -745,6 +796,16 @@ class RayPPOTrainer(object):
 
                         else:
                             old_log_prob.batch['label_pos'] = None
+
+                        if self.config.actor_rollout_ref.actor.use_group_div:
+                            batch.batch['old_group_hidden_states'] = repeat_by_batch(old_log_prob.batch['old_hidden_states']) # (bsz, (n_group-1)*rollout_n, dim)
+                            # print("target:", old_log_prob.batch['old_hidden_states'][0:8])
+                            # print("&&&&0:",batch.batch['old_group_hidden_states'][0])
+                            # print("&1:",batch.batch['old_group_hidden_states'][1])
+                            # print("####7:",batch.batch['old_group_hidden_states'][7])
+                            # print("#8:",batch.batch['old_group_hidden_states'][8])
+                            # print("#9:",batch.batch['old_group_hidden_states'][9])
+
 
                         if self.use_reference_policy:
                             # compute reference log_prob

@@ -52,8 +52,8 @@ def calculate_equation_matrix(group_rollouts):
 
     for i in range(len(formulas)):
         diversity.append(calculate_unique_diversity(formulas, i))
-
-    return sum(diversity)/len(diversity)
+    return np.array(diversity)
+    # return sum(diversity)/len(diversity)
 
 def calculate_belu_matrix(group_rollouts):
     n = len(group_rollouts)
@@ -75,5 +75,5 @@ def calculate_belu_matrix(group_rollouts):
             similarity_matrix[j][i] = similarity
 
     avg_similarities = np.sum(similarity_matrix, axis=1) / (n-1)
-
-    return avg_similarities.mean()
+    return avg_similarities
+    # return avg_similarities.mean()

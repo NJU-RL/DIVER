@@ -29,7 +29,7 @@ python3 -m verl.div_src.main_rl \
     algorithm.adv_estimator=grpo \
     data.train_files=dataset/openr1.parquet \
     data.val_files=dataset/valid.all.parquet \
-    data.train_batch_size=16 \
+    data.train_batch_size=32 \
     data.val_batch_size=512 \
     data.max_prompt_length=1024 \
     data.max_response_length=8192 \
@@ -57,6 +57,9 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.rollout.n_val=1 \
     actor_rollout_ref.actor.use_div=True \
     actor_rollout_ref.actor.div_coeff=0.01 \
+    actor_rollout_ref.actor.use_group_div=True \
+    actor_rollout_ref.actor.group_div_coeff=0.01 \
+    actor_rollout_ref.actor.use_div_reward_shaping=True \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.critic_warmup=0 \

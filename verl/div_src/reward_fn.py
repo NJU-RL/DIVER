@@ -75,3 +75,5 @@ class RewardManager():
             reward_tensor[i, valid_response_length - 1] = score
 
         return reward_tensor
+    
+

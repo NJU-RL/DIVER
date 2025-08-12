@@ -23,13 +23,17 @@ actor_rollout_ref:
   actor:
     use_div: False # if diversity rollout
     div_coeff: 0.01
+    use_group_div: False # if diversity rollout
+    group_div_coeff: 0.01
+    use_div_reward_shaping: True
     strategy: fsdp  # This is for backward-compatibility
     ppo_mini_batch_size: 256
     ppo_micro_batch_size: 64
     use_dynamic_bsz: False
     ppo_max_token_len_per_gpu: 16384 # n * ${data.max_prompt_length} + ${data.max_response_length}
     grad_clip: 1.0
-    clip_ratio: 0.28
+    high_clip_ratio: 0.28
+    low_clip_ratio: 0.28
     entropy_coeff: 0.001
     use_kl_loss: False # True for GRPO
     kl_loss_coef: 0.001 # for grpo
