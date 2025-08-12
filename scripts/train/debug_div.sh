@@ -55,9 +55,9 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.85 \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.n_val=1 \
-    actor_rollout_ref.actor.use_div=True \
+    actor_rollout_ref.actor.use_div=False \
     actor_rollout_ref.actor.div_coeff=0.01 \
-    actor_rollout_ref.actor.use_group_div=True \
+    actor_rollout_ref.actor.use_group_div=False \
     actor_rollout_ref.actor.group_div_coeff=0.01 \
     actor_rollout_ref.actor.use_div_reward_shaping=True \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \

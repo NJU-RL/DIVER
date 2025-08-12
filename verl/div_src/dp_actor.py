@@ -367,9 +367,9 @@ class DataParallelPPOActor(BasePPOActor):
                     div_advantages = data['div_advantages']
                     # old_hidden_states = data['old_hidden_states']
                     # old_group_hidden_states = data['old_group_hidden_states']
-                    label_pos = data['label_pos']
-                    cl_mask = 1-data['token_level_rewards'].sum(dim=1)
-                    solve_none_flag = data['solve_none_flag']
+                    # label_pos = data['label_pos']
+                    # cl_mask = 1-data['token_level_rewards'].sum(dim=1)
+                    # solve_none_flag = data['solve_none_flag']
                     # print(f"cl_mask:{cl_mask}")
 
                     # print(f"old_log_prob:{old_hidden_states}; label_pos:{label_pos}")
@@ -399,16 +399,16 @@ class DataParallelPPOActor(BasePPOActor):
                     # if self.config.use_group_div:
                     #     group_cl_loss = self.group_contrastive_loss(hidden_states, old_group_hidden_states)
 
-                    if self.config.use_div:
-                        cl_loss = self.contrastive_loss(hidden_states, old_hidden_states, label_pos, solve_none_flag, cl_mask)
-                        if self.config.use_group_div:
-                            group_cl_loss = self.group_contrastive_loss(hidden_states, old_group_hidden_states)
-                        else:
-                            group_cl_loss=torch.tensor(0.0, device=hidden_states.device, requires_grad=True)
+                    # if self.config.use_div:
+                    #     cl_loss = self.contrastive_loss(hidden_states, old_hidden_states, label_pos, solve_none_flag, cl_mask)
+                    #     if self.config.use_group_div:
+                    #         group_cl_loss = self.group_contrastive_loss(hidden_states, old_group_hidden_states)
+                    #     else:
+                    #         group_cl_loss=torch.tensor(0.0, device=hidden_states.device, requires_grad=True)
 
-                        policy_loss = pg_loss - entropy_loss * entropy_coeff + 0.0 * cl_loss + group_div_coeff * group_cl_loss
-                    else: 
-                        policy_loss = pg_loss - entropy_loss * entropy_coeff
+                    #     policy_loss = pg_loss - entropy_loss * entropy_coeff + 0.0 * cl_loss + group_div_coeff * group_cl_loss
+                    # else: 
+                    policy_loss = pg_loss - entropy_loss * entropy_coeff
                     # print(f"disp_loss:{disp_loss}; pg_loss:{pg_loss}")
 
                     if self.config.use_kl_loss:
@@ -432,10 +432,10 @@ class DataParallelPPOActor(BasePPOActor):
                         'actor/pg_clipfrac': pg_clipfrac.detach().item(),
                         'actor/ppo_kl': ppo_kl.detach().item()
                     }
-                    if self.config.use_div:
-                        data['actor/contrastive_loss'] = cl_loss.detach().item()
-                    if self.config.use_group_div:
-                        data['actor/group_contrastive_loss'] = group_cl_loss.detach().item()
+                    # if self.config.use_div:
+                    #     data['actor/contrastive_loss'] = cl_loss.detach().item()
+                    # if self.config.use_group_div:
+                    #     data['actor/group_contrastive_loss'] = group_cl_loss.detach().item()
                     append_to_dict(metrics, data)
 
                 grad_norm = self._optimizer_step()
