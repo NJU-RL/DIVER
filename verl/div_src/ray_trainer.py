@@ -711,7 +711,7 @@ class RayPPOTrainer(object):
                     batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],dtype=object)
                 
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
-                    batch.batch['div_reward'] = 1-torch.tensor(np.array(div_belu).reshape(-1))
+                    
                 
                     batch = batch.union(gen_batch_output)
 
@@ -729,7 +729,14 @@ class RayPPOTrainer(object):
 
                         reward_tensor = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
-                        # print(reward_tensor.shape)
+                        batch.batch['div_reward'] = -torch.tensor(np.array(div_belu).reshape(-1))*(1-reward_tensor.sum(dim=1))*0.00001
+
+                        # score = reward_tensor.sum(dim=1).reshape(-1,self.config.actor_rollout_ref.rollout.n) # (n_group, rollout_n)
+                        # solve_none_flag = (~score.any(dim=-1)).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0)
+                        # print("sovel_none_flag:\n",batch.batch['solve_none_flag'])
+                        # print("reward_tensor:\n", reward_tensor)
+                        # batch.batch['div_reward'] = -torch.tensor(np.array(div_belu).reshape(-1)) * 0.0001 * solve_none_flag
+                        # print("div_reward:",batch.batch['div_reward'])
 
                         # Rejection sampling based on rewards
                         # Group rewards by uid

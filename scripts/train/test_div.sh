@@ -66,7 +66,7 @@ python3 -m verl.div_src.main_rl \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='div' \
-    trainer.experiment_name='rs' \
+    trainer.experiment_name='rs_0.00001_error' \
     +trainer.val_before_train=True \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
