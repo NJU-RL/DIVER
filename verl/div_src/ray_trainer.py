@@ -153,14 +153,13 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         response_length = responses.size(-1)
         attention_mask = data.batch['attention_mask']
         response_mask = attention_mask[:, -response_length:]
-        advantages, returns = calculate_adv.compute_grpo_outcome_advantage(token_level_rewards=token_level_rewards,
-                                                                        eos_mask=response_mask,
-                                                                        index=index)
-        div_adv, _ = calculate_adv.compute_div_adv(div_reward=div_reward,
-                                                             eos_mask=response_mask)
+        advantages, returns = calculate_adv.compute_grpo_rs_outcome_advantage(token_level_rewards=token_level_rewards,
+                                                                              div_reward=div_reward,
+                                                                              eos_mask=response_mask,
+                                                                              index=index)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
-        data.batch['div_advantages'] = div_adv
+        
     elif adv_estimator == 'reinforce_plus_plus':
         token_level_rewards = data.batch['token_level_rewards']
         responses = data.batch['responses']
@@ -201,10 +200,11 @@ def _compute_response_info(batch):
 def compute_data_metrics(batch, use_critic=True):
     # TODO: add response length
     sequence_score = batch.batch['token_level_scores'].sum(-1)
-    sequence_reward = batch.batch['token_level_rewards'].sum(-1)
+    # sequence_reward = batch.batch['token_level_rewards'].sum(-1)
+    div_reward = batch.batch['div_reward']
 
     advantages = batch.batch['advantages']
-    div_advantages = batch.batch['div_advantages']
+
     returns = batch.batch['returns']
 
     max_response_length = batch.batch['responses'].shape[-1]
@@ -219,7 +219,6 @@ def compute_data_metrics(batch, use_critic=True):
     response_length = response_info['response_length']
 
     valid_adv = torch.masked_select(advantages, response_mask)
-    valid_div_adv = torch.masked_select(div_advantages, response_mask)
     valid_returns = torch.masked_select(returns, response_mask)
 
     if use_critic:
@@ -237,12 +236,19 @@ def compute_data_metrics(batch, use_critic=True):
         'critic/score/min':
             torch.min(sequence_score).detach().item(),
         # reward
-        'critic/rewards/mean':
-            torch.mean(sequence_reward).detach().item(),
-        'critic/rewards/max':
-            torch.max(sequence_reward).detach().item(),
-        'critic/rewards/min':
-            torch.min(sequence_reward).detach().item(),
+        # 'critic/rewards/mean':
+        #     torch.mean(sequence_reward).detach().item(),
+        # 'critic/rewards/max':
+        #     torch.max(sequence_reward).detach().item(),
+        # 'critic/rewards/min':
+        #     torch.min(sequence_reward).detach().item(),
+        # # reward shaping
+        'critic/div_rewards/mean':
+            torch.mean(div_reward).detach().item(),
+        'critic/div_rewards/max':
+            torch.max(div_reward).detach().item(),
+        'critic/div_rewards/min':
+            torch.min(div_reward).detach().item(),
         # adv
         'critic/advantages/mean':
             torch.mean(valid_adv).detach().item(),
@@ -250,12 +256,6 @@ def compute_data_metrics(batch, use_critic=True):
             torch.max(valid_adv).detach().item(),
         'critic/advantages/min':
             torch.min(valid_adv).detach().item(),
-        'critic/div_adv/mean':
-            torch.mean(valid_div_adv).detach().item(),
-        'critic/div_adv/max':
-            torch.max(valid_div_adv).detach().item(),
-        'critic/div_adv/min':
-            torch.min(valid_div_adv).detach().item(),
         # returns
         'critic/returns/mean':
             torch.mean(valid_returns).detach().item(),
@@ -729,10 +729,25 @@ class RayPPOTrainer(object):
 
                         reward_tensor = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
-                        batch.batch['div_reward'] = -torch.tensor(np.array(div_belu).reshape(-1))*(1-reward_tensor.sum(dim=1))*0.00001
+                        
+                        # if self.config.
+                        # div_reward = torch.tensor(np.array(div_belu))
+                        # div_reward_mean = div_reward.mean(dim=1).unsqueeze(1).repeat_interleave(div_reward.shape[1],dim=1)
+                        # div_reward_std = div_reward.std(dim=1).unsqueeze(1).repeat_interleave(div_reward.shape[1],dim=1)
+                        # div_reward= -((div_reward-div_reward_mean)/div_reward_std).reshape(-1)*self.config.actor_rollout_ref.actor.rs_scale
+                        div_reward= -torch.tensor(np.maximum(np.array(div_belu),0.1).reshape(-1))*self.config.actor_rollout_ref.actor.rs_scale
+                        score = reward_tensor.sum(dim=1)
+                        div_reward=torch.where(score>0.5, div_reward*0.5, div_reward)
+                        solve_all_flag = score.reshape(-1,self.config.actor_rollout_ref.rollout.n).all(dim=-1).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0)
+                        batch.batch['div_reward']=torch.where(solve_all_flag, torch.zeros_like(div_reward), div_reward)
+                        # batch.batch['div_reward']=torch.where((div_reward<0) & (reward_tensor.sum(dim=1)>0.5), torch.zeros_like(div_reward), div_reward)
+                        # batch.batch['div_reward'] = -torch.tensor(np.array(div_belu).reshape(-1))
+                        # batch.batch['div_reward'] = -torch.tensor(np.array(div_belu).reshape(-1))*(1-reward_tensor.sum(dim=1))*0.00001
 
                         # score = reward_tensor.sum(dim=1).reshape(-1,self.config.actor_rollout_ref.rollout.n) # (n_group, rollout_n)
                         # solve_none_flag = (~score.any(dim=-1)).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0)
+                        # batch.batch['div_reward']= div_reward * solve_none_flag
+
                         # print("sovel_none_flag:\n",batch.batch['solve_none_flag'])
                         # print("reward_tensor:\n", reward_tensor)
                         # batch.batch['div_reward'] = -torch.tensor(np.array(div_belu).reshape(-1)) * 0.0001 * solve_none_flag

@@ -328,7 +328,7 @@ class DataParallelPPOActor(BasePPOActor):
         self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
         # print(f"data:{data.batch}")
-        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages','div_advantages',
+        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages',
                        'old_hidden_states']
         # 'label_pos','token_level_rewards', 'solve_none_flag','old_group_hidden_states'
         
@@ -364,7 +364,7 @@ class DataParallelPPOActor(BasePPOActor):
                     response_mask = attention_mask[:, -response_length:]
                     old_log_prob = data['old_log_probs']
                     advantages = data['advantages']
-                    div_advantages = data['div_advantages']
+                    # div_advantages = data['div_advantages']
                     # old_hidden_states = data['old_hidden_states']
                     # old_group_hidden_states = data['old_group_hidden_states']
                     # label_pos = data['label_pos']
@@ -388,7 +388,7 @@ class DataParallelPPOActor(BasePPOActor):
 
                     pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
                                                                                 log_prob=log_prob,
-                                                                                advantages=advantages+div_advantages,
+                                                                                advantages=advantages,
                                                                                 eos_mask=response_mask,
                                                                                 cliprange=clip_ratio)
                     # compute entropy loss from entropy

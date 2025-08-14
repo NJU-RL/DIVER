@@ -59,6 +59,8 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.actor.div_coeff=0.1 \
     actor_rollout_ref.actor.use_group_div=False \
     actor_rollout_ref.actor.group_div_coeff=0.01 \
+    actor_rollout_ref.actor.rs_scale=0.001 \
+    actor_rollout_ref.actor.rs_type=equ \
     actor_rollout_ref.actor.high_clip_ratio=0.28 \
     actor_rollout_ref.actor.low_clip_ratio=0.20 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
@@ -66,7 +68,7 @@ python3 -m verl.div_src.main_rl \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='div' \
-    trainer.experiment_name='rs_0.00001_error' \
+    trainer.experiment_name='rs_0.001_div+rule_5-belu_clip_0.1_not_solve_all' \
     +trainer.val_before_train=True \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \

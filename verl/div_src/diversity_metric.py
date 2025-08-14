@@ -57,17 +57,18 @@ def calculate_equation_matrix(group_rollouts):
 
 def calculate_belu_matrix(group_rollouts):
     n = len(group_rollouts)
+    weights = (0.05, 0.1, 0.15, 0.25, 0.35)
     similarity_matrix = np.zeros((n, n))
     for i in range(n):
         for j in range(i+1, n):
             # calculate BLEU score
             reference_i = [group_rollouts[i].split()]
             candidate_j = group_rollouts[j].split()
-            bleu_i_j = sentence_bleu(reference_i, candidate_j)
+            bleu_i_j = sentence_bleu(reference_i, candidate_j, weights=weights)
             
             reference_j = [group_rollouts[j].split()]
             candidate_i = group_rollouts[i].split()
-            bleu_j_i = sentence_bleu(reference_j, candidate_i)
+            bleu_j_i = sentence_bleu(reference_j, candidate_i, weights=weights)
             
             # Similarity is bidirectional
             similarity = (bleu_i_j + bleu_j_i) / 2
