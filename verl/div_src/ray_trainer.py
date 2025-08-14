@@ -17,6 +17,7 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import os
+from turtle import back
 from unittest import result
 import uuid
 from contextlib import contextmanager
@@ -754,13 +755,15 @@ class RayPPOTrainer(object):
                     response_str = self.tokenizer.batch_decode(gen_batch_output.batch['responses'],skip_special_tokens=True)
 
                     div_belu, div_equ = [],[]
-
+                    equ_rewards = []
                     for i in range(len(gen_batch.batch)):
                         group_start = i * self.config.actor_rollout_ref.rollout.n_total
                         group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
                         group = response_str[group_start:group_end]
                         div_belu.append(calculate_belu_matrix(group))
-                        div_equ.append(calculate_equation_matrix(group))
+                        equ_mean, equ_diversity = calculate_equation_matrix(group)
+                        equ_rewards.extend(equ_diversity)
+                        div_equ.append(equ_mean)
                     metrics['div_metric/equ'] = np.mean(div_equ)
                     metrics['div_metric/belu'] = np.mean(div_belu)
                     
@@ -902,7 +905,41 @@ class RayPPOTrainer(object):
                                 ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
                                 batch = batch.union(ref_log_prob)
 
-                        batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
+                        batch.batch['token_level_rewards'] = batch.batch['token_level_scores'].clone()
+
+                        prompt_ids = batch.batch['prompts']
+                        prompt_length = prompt_ids.shape[-1]
+
+                        valid_positions = batch.batch['attention_mask'][:, prompt_length:].sum(dim=1)
+                        valid_positions = valid_positions - 1
+
+                        equ_rewards = torch.tensor(equ_rewards, device=reward_tensor.device)
+
+                        # print("valid_positions shape:", valid_positions.shape)
+                        # print("valid_positions:", valid_positions)
+                        # print("equ_rewards shape:", equ_rewards.shape)
+
+                        # # 2. 确保arange长度正确
+                        # index = torch.arange(len(valid_positions), device=valid_positions.device)
+                        # print("index shape:", index.shape)
+                        
+
+                        indices = torch.arange(len(valid_positions), device=valid_positions.device)
+                        # 获取当前位置的值
+                        current_values = batch.batch['token_level_rewards'][indices, valid_positions]
+
+                        # 创建掩码，只在值为0的位置更新
+                        zero_mask = (current_values == 0)
+                        batch.batch['token_level_rewards'][indices[zero_mask], valid_positions[zero_mask]] += 0.1 * equ_rewards[zero_mask]
+
+
+                        # batch.batch['token_level_rewards'][torch.arange(len(valid_positions)), valid_positions] += 0.1 * equ_rewards
+
+                        
+                        # for i in range(len(batch.batch['token_level_rewards'])):
+                        #     print(batch.batch['token_level_rewards'][i][torch.where(batch.batch['token_level_rewards'][i] > 0)[0]])
+                        
+
 
                         # compute advantages, executed on the driver process
                         batch = compute_advantage(batch,

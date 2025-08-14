@@ -37,7 +37,7 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=32 \
-    actor_rollout_ref.actor.ppo_micro_batch_size=4\
+    actor_rollout_ref.actor.ppo_micro_batch_size=32\
     actor_rollout_ref.actor.use_dynamic_bsz=True \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=32768 \
     actor_rollout_ref.actor.use_kl_loss=False \
@@ -49,10 +49,12 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.actor.fsdp_config.grad_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \
+    actor_rollout_ref.actor.entropy_coeff=0.001 \
+    actor_rollout_ref.actor.contrastive_coeff=0 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.temperature=1.0 \
-    actor_rollout_ref.rollout.val_temperature=0 \
+    actor_rollout_ref.rollout.val_temperature=0.6 \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.85 \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.n_total=8 \
@@ -64,7 +66,7 @@ python3 -m verl.div_src.main_rl \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='div' \
-    trainer.experiment_name='constrastive_clp_0_28_t_1' \
+    trainer.experiment_name='rs_equ_error_01' \
     +trainer.val_before_train=False \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \

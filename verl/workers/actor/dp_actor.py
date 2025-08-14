@@ -144,7 +144,7 @@ class DataParallelPPOActor(BasePPOActor):
                                                 indices=indices,
                                                 batch=batch_size,
                                                 seqlen=seqlen)
-                    last_indices = torch.clamp(attention_mask[:,-response_length:].sum(dim=1)-2, min=0)
+                    last_indices = torch.clamp(attention_mask[:,-response_length:].sum(dim=1)-2, min=0) // 5
                     batch_indices = torch.arange(batch_size, device=full_hidden_states.device)
                     last_hidden_states = full_hidden_states[:,-response_length:][batch_indices, last_indices] # (bsz, hidden_dim)
                     
@@ -170,7 +170,7 @@ class DataParallelPPOActor(BasePPOActor):
                                                output_hidden_states=True,
                                                use_cache=False)
                     hidden_states = output.hidden_states[-1].squeeze(0)
-                    last_indices = torch.clamp(attention_mask[:,-response_length:].sum(dim=1)-2, min=0)
+                    last_indices = torch.clamp(attention_mask[:,-response_length:].sum(dim=1)-2, min=0) // 5
                     batch_indices = torch.arange(batch_size, device=hidden_states.device)
                     last_hidden_states = hidden_states[:,-response_length:][batch_indices, last_indices]
                 else:
@@ -314,31 +314,54 @@ class DataParallelPPOActor(BasePPOActor):
         
         return total_loss
     
-    def disp_loss(self, old_hidden_states: torch.Tensor, hidden_states: torch.Tensor, tau: float = 1., epsilon=1e-8):
-        '''hidden states: [bsz, rollout_n, hidden_dim]'''
+    def disp_loss(self, old_hidden_states: torch.Tensor, hidden_states: torch.Tensor, cl_mask, group_mask, tau: float = 1., epsilon=1e-8):
+        '''
+        old hidden states: [bsz, rollout_n, hidden_dim]
+        hidden stats: [bsz, 1, hidden_dim]
+        '''
         bsz, n, _ = hidden_states.shape
         device = hidden_states.device
+
+        valid_indices = cl_mask.bool()
+        if not valid_indices.any():
+            return torch.tensor(0.0, device=device), torch.tensor(0.0, device=device)
+
+        old_hidden_states = old_hidden_states[valid_indices]  # [valid_bsz, rollout_n, hidden_dim]
+        hidden_states = hidden_states[valid_indices]  # [valid_bsz, 1, hidden_dim]
+        group_mask = group_mask[valid_indices]  # [valid_bsz, rollout_n]
+
+        group_mask = group_mask.unsqueeze(-1).bool()
+        old_hidden_states = torch.where(group_mask, old_hidden_states, torch.zeros_like(old_hidden_states))
 
         # old_hidden_states = old_hidden_states[:, 1:, :]
         # hidden_states = hidden_states[:, 1:, :]
 
+        old_hidden_states = old_hidden_states[:, 1:, :]  # [bsz, rollout_n - 1, hidden_dim]
         Z_old = torch.nn.functional.normalize(old_hidden_states, dim=2)
         Z = torch.nn.functional.normalize(hidden_states, dim=2)
         
-        sim_matrix = torch.bmm(Z_old, Z.transpose(1, 2)) # [bsz, n, 1]
+        sim_matrix = torch.bmm(Z_old, Z.transpose(1, 2)) # [bsz, rollout_n - 1, 1]
         sim_matrix.squeeze(dim=2)
-        D_matrix = 2 * (1 - sim_matrix)
-        print(f'D matrix: {D_matrix.shape}')
+        normed_sim_matrix = torch.nn.functional.normalize(sim_matrix, dim=1)
+
+        mask = (normed_sim_matrix != 0)
+        masked_normed_sim_matrix = normed_sim_matrix.clone()
+        masked_normed_sim_matrix[~mask] = float('-inf')
+
+        # print(f'masked: {masked_normed_sim_matrix}')
+
+        D_matrix = 1 - normed_sim_matrix
+        # print(f'D matrix: {D_matrix}')
         
         total_loss = 0
-        for i in range(bsz):
+        for i in range(D_matrix.shape[0]):
             D = D_matrix[i]
-            print(f'D: {D}')
+            # print(f'D: {D}')
             total_loss += torch.log(torch.mean(torch.exp(-D/tau) + epsilon))
         
-        print(f'total loss: {total_loss}')
+        # print(f'total loss: {total_loss}')
         
-        return total_loss
+        return total_loss, sim_matrix.mean()
     
     def contrastive_loss(self, hidden_states, old_hidden_states, labels):
         """
@@ -373,44 +396,52 @@ class DataParallelPPOActor(BasePPOActor):
         
         return loss
     
-    def _compute_group_contrastive_loss(self, old_hidden_states: torch.Tensor, hidden_states: torch.Tensor, cl_mask, temperature=1.):
+    def _compute_group_contrastive_loss(self, old_hidden_states: torch.Tensor, hidden_states: torch.Tensor, cl_mask, group_mask, temperature=0.5):
         """
         Compute logits for constrastive loss within a group.
 
         Args:
             old_hidden_states: #(bsz, rollout_n, hidden_dim)
             hidden_states: #(bsz, 1, hidden_dim)
+            cl_mask: #(bsz)
+            group_mask: #(bsz, rollout_n)
 
         Return:
             loss
         """
-        # bsz, _, _ = old_hidden_states.shape
 
         valid_indices = cl_mask.bool()
         if not valid_indices.any():
-            return torch.tensor(0.0)
-        
-        old_hidden_states = old_hidden_states[valid_indices]
-        hidden_states = hidden_states[valid_indices]
+            return torch.tensor(0.0, device=old_hidden_states.device), torch.tensor(0.0, device=old_hidden_states.device)
 
-        # print(f'valid indices shape: {valid_indices.shape}')
-        # print(f'hidden states shape: {old_hidden_states[valid_indices].shape}')
+        old_hidden_states = old_hidden_states[valid_indices]  # [valid_bsz, rollout_n, hidden_dim]
+        hidden_states = hidden_states[valid_indices]  # [valid_bsz, 1, hidden_dim]
+        group_mask = group_mask[valid_indices]  # [valid_bsz, rollout_n]
+
+        group_mask = group_mask.unsqueeze(-1).bool()  # [valid_bsz, rollout_n, 1]
+        # print(f'group mask: {group_mask}')
+        old_hidden_states = torch.where(group_mask, old_hidden_states, torch.zeros_like(old_hidden_states))
 
 
         old_hidden_states_norm = torch.nn.functional.normalize(old_hidden_states, p=2, dim=2)
         hidden_states_norm = torch.nn.functional.normalize(hidden_states, p=2, dim=2)
 
         logits = torch.bmm(old_hidden_states_norm, hidden_states_norm.transpose(1, 2))  # [bsz, rollout_n, 1]
-        # logits = torch.bmm(hidden_states, old_hidden_states.transpose(1, 2)) # [bsz, 1, rollout_n]
+
+        logits = torch.nn.functional.normalize(logits, p=2, dim=1)
  
         logits = logits.squeeze(-1) / temperature  # [bsz, rollout_n]
         labels = torch.zeros(old_hidden_states.shape[0], dtype=torch.long, device=logits.device)
 
-        # print(f'logits shape: {logits.shape}')
+        mask = (logits != 0)
+        masked_logits = logits.clone()
+        masked_logits[~mask] = float('-inf')
 
-        loss = nn.functional.cross_entropy(logits, labels)
+        # print(f'masked logits: {masked_logits}')
 
-        return loss
+        loss = nn.functional.cross_entropy(masked_logits, labels)
+
+        return loss, logits.mean().detach()
 
 
     def update_policy(self, data: DataProto):
@@ -466,6 +497,7 @@ class DataParallelPPOActor(BasePPOActor):
                     advantages = data['advantages']
                     old_hidden_states = data['old_hidden_states']
                     cl_mask = 1 - data['token_level_rewards'].sum(dim=1)
+                    group_mask = 1 - data['group_rewards']
                     # labels = data['labels']
 
                     # from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -498,6 +530,7 @@ class DataParallelPPOActor(BasePPOActor):
                     clip_ratio = self.config.clip_ratio
                     clip_ratio_high = self.config.clip_ratio_high
                     entropy_coeff = self.config.entropy_coeff
+                    contrastive_coeff = self.config.contrastive_coeff
 
                     entropy, log_prob, hidden_states = self._forward_micro_batch(micro_batch=data, temperature=temperature)
                     # constrastive_loss = self.contrastive_loss(hidden_states, old_hidden_states, labels)
@@ -505,15 +538,9 @@ class DataParallelPPOActor(BasePPOActor):
 
                     # print(f'cl mask: {cl_mask}')
 
-                    contrastive_loss = self._compute_group_contrastive_loss(old_hidden_states, hidden_states, cl_mask)
-                    # print(f'labels: {labels}')
-                    # constrastive_loss = self.disp_loss(old_hidden_states, hidden_states)
+                    # contrastive_loss, cos_sim = self._compute_group_contrastive_loss(old_hidden_states, hidden_states, cl_mask, group_mask)
 
-                    # print(f'constrast loss: {constrastive_loss}')
-
-                    # print(f'logits: {logits.shape}')
-                    # print(logits.requires_grad)
-                    # print(f'labels: {labels}')
+                    contrastive_loss, cos_sim = self.disp_loss(old_hidden_states, hidden_states, cl_mask, group_mask)
 
                     # hidden_states_lst.append((hidden_states))
 
@@ -529,8 +556,9 @@ class DataParallelPPOActor(BasePPOActor):
                     entropy_loss = verl_F.masked_mean(entropy, response_mask)
 
                     # compute policy loss
-                    print(f'contrastive loss: {contrastive_loss}')
-                    policy_loss = pg_loss - entropy_loss * entropy_coeff + 0.01 * contrastive_loss
+                    # contrastive_loss.detach()
+                    # print(f'contrastive loss: {contrastive_loss}')
+                    policy_loss = pg_loss - entropy_loss * entropy_coeff + contrastive_coeff * contrastive_loss
                     if self.config.use_kl_loss:
                         ref_log_prob = data['ref_log_prob']
                         # compute kl loss
@@ -551,6 +579,7 @@ class DataParallelPPOActor(BasePPOActor):
                         'actor/entropy_loss': entropy_loss.detach().item(),
                         'actor/pg_loss': pg_loss.detach().item(),
                         'actor/contrastive_loss': contrastive_loss.detach().item(),
+                        'actor/cos_sim': cos_sim.item(),
                         'actor/pg_clipfrac': pg_clipfrac.detach().item(),
                         'actor/ppo_kl': ppo_kl.detach().item(),
                     }

@@ -53,7 +53,7 @@ def calculate_equation_matrix(group_rollouts):
     for i in range(len(formulas)):
         diversity.append(calculate_unique_diversity(formulas, i))
 
-    return sum(diversity)/len(diversity)
+    return sum(diversity)/len(diversity), diversity
 
 def calculate_belu_matrix(group_rollouts):
     n = len(group_rollouts)
