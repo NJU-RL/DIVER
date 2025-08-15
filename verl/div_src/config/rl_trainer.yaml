@@ -26,7 +26,8 @@ actor_rollout_ref:
     use_group_div: False # if diversity rollout
     group_div_coeff: 0.01
     use_div_reward_shaping: True
-    rs_scale: 0.001
+    pos_rs_scale: 0.001
+    neg_rs_scale: 0.001
     rs_type: belu
     strategy: fsdp  # This is for backward-compatibility
     ppo_mini_batch_size: 256

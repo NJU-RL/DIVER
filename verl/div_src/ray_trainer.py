@@ -730,29 +730,53 @@ class RayPPOTrainer(object):
                         reward_tensor = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
                         
-                        # if self.config.
-                        # div_reward = torch.tensor(np.array(div_belu))
-                        # div_reward_mean = div_reward.mean(dim=1).unsqueeze(1).repeat_interleave(div_reward.shape[1],dim=1)
-                        # div_reward_std = div_reward.std(dim=1).unsqueeze(1).repeat_interleave(div_reward.shape[1],dim=1)
-                        # div_reward= -((div_reward-div_reward_mean)/div_reward_std).reshape(-1)*self.config.actor_rollout_ref.actor.rs_scale
-                        div_reward= -torch.tensor(np.maximum(np.array(div_belu),0.1).reshape(-1))*self.config.actor_rollout_ref.actor.rs_scale
-                        score = reward_tensor.sum(dim=1)
-                        div_reward=torch.where(score>0.5, div_reward*0.5, div_reward)
-                        solve_all_flag = score.reshape(-1,self.config.actor_rollout_ref.rollout.n).all(dim=-1).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0)
-                        batch.batch['div_reward']=torch.where(solve_all_flag, torch.zeros_like(div_reward), div_reward)
-                        # batch.batch['div_reward']=torch.where((div_reward<0) & (reward_tensor.sum(dim=1)>0.5), torch.zeros_like(div_reward), div_reward)
-                        # batch.batch['div_reward'] = -torch.tensor(np.array(div_belu).reshape(-1))
-                        # batch.batch['div_reward'] = -torch.tensor(np.array(div_belu).reshape(-1))*(1-reward_tensor.sum(dim=1))*0.00001
+                        if self.config.actor_rollout_ref.actor.rs_type=='belu':
+                            # div_reward = torch.tensor(np.array(div_belu))
+                            # div_reward_mean = div_reward.mean(dim=1).unsqueeze(1).repeat_interleave(div_reward.shape[1],dim=1)
+                            # div_reward_std = div_reward.std(dim=1).unsqueeze(1).repeat_interleave(div_reward.shape[1],dim=1)
+                            # div_reward= -((div_reward-div_reward_mean)/div_reward_std).reshape(-1)*self.config.actor_rollout_ref.actor.rs_scale
+                            div_reward= -torch.tensor(np.maximum(np.array(div_belu),0.1).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
+                            score = reward_tensor.sum(dim=1)
+                            div_reward=torch.where(score>0.5, div_reward*0.5, div_reward)
+                            solve_all_flag = score.reshape(-1,self.config.actor_rollout_ref.rollout.n).all(dim=-1).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0)
+                            batch.batch['div_reward']=torch.where(solve_all_flag, torch.zeros_like(div_reward), div_reward)
+                            # batch.batch['div_reward']=torch.where((div_reward<0) & (reward_tensor.sum(dim=1)>0.5), torch.zeros_like(div_reward), div_reward)
+                            # batch.batch['div_reward'] = -torch.tensor(np.array(div_belu).reshape(-1))
+                            # batch.batch['div_reward'] = -torch.tensor(np.array(div_belu).reshape(-1))*(1-reward_tensor.sum(dim=1))*0.00001
 
-                        # score = reward_tensor.sum(dim=1).reshape(-1,self.config.actor_rollout_ref.rollout.n) # (n_group, rollout_n)
-                        # solve_none_flag = (~score.any(dim=-1)).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0)
-                        # batch.batch['div_reward']= div_reward * solve_none_flag
+                            # score = reward_tensor.sum(dim=1).reshape(-1,self.config.actor_rollout_ref.rollout.n) # (n_group, rollout_n)
+                            # solve_none_flag = (~score.any(dim=-1)).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0)
+                            # batch.batch['div_reward']= div_reward * solve_none_flag
 
-                        # print("sovel_none_flag:\n",batch.batch['solve_none_flag'])
-                        # print("reward_tensor:\n", reward_tensor)
-                        # batch.batch['div_reward'] = -torch.tensor(np.array(div_belu).reshape(-1)) * 0.0001 * solve_none_flag
-                        # print("div_reward:",batch.batch['div_reward'])
+                            # print("sovel_none_flag:\n",batch.batch['solve_none_flag'])
+                            # print("reward_tensor:\n", reward_tensor)
+                            # batch.batch['div_reward'] = -torch.tensor(np.array(div_belu).reshape(-1)) * 0.0001 * solve_none_flag
+                            # print("div_reward:",batch.batch['div_reward'])
+                        elif self.config.actor_rollout_ref.actor.rs_type=='equ':
+                            div_reward= torch.tensor(np.minimum(np.array(div_equ),0.67).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
+                            group_score = reward_tensor.bool().sum(dim=1).reshape(-1,self.config.actor_rollout_ref.rollout.n)
+                            solve_all_flag = group_score.all(dim=-1).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0) #(bsz,)
+                            solve_none_flag = (~group_score.any(dim=-1)).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0)
+                            solve_mix_flag = ~(torch.cat([solve_all_flag.view(-1,1), solve_none_flag.view(-1,1)],dim=1).any(dim=1))
+                            group_acc = (group_score.sum(dim=1)/self.config.actor_rollout_ref.rollout.n).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0) #(bsz,)
 
+                            div_reward[solve_none_flag] = div_reward[solve_none_flag] * 0.1
+                            div_reward[solve_mix_flag] = div_reward[solve_mix_flag] * group_acc[solve_mix_flag]
+                            div_reward[solve_all_flag] = div_reward[solve_all_flag] * 1.2
+                            batch.batch['div_reward'] = div_reward
+                        elif self.config.actor_rollout_ref.actor.rs_type=='mix':
+                            equ_reward= torch.tensor(np.minimum(np.array(div_equ),0.67).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
+                            belu_reward= -torch.tensor(np.maximum(np.array(div_belu),0.1).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
+                            batch.batch['div_reward'] = torch.zeros_like(equ_reward)
+                            group_score = reward_tensor.bool().sum(dim=1).reshape(-1,self.config.actor_rollout_ref.rollout.n)
+                            solve_all_flag = group_score.all(dim=-1).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0) #(bsz,)
+                            solve_none_flag = (~group_score.any(dim=-1)).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0)
+                            solve_mix_flag = ~(torch.cat([solve_all_flag.view(-1,1), solve_none_flag.view(-1,1)],dim=1).any(dim=1))
+                            group_acc = (group_score.sum(dim=1)/self.config.actor_rollout_ref.rollout.n).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0) #(bsz,)
+                            batch.batch['div_reward'][solve_mix_flag] = equ_reward[solve_mix_flag] * group_acc[solve_mix_flag]
+                            batch.batch['div_reward'][solve_all_flag] = equ_reward[solve_all_flag] * 1.2
+                            batch.batch['div_reward'][solve_none_flag] = belu_reward[solve_none_flag]
+                        
                         # Rejection sampling based on rewards
                         # Group rewards by uid
                         uids = batch.non_tensor_batch['uid']
