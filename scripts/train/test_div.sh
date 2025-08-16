@@ -69,7 +69,7 @@ python3 -m verl.div_src.main_rl \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='div' \
-    trainer.experiment_name='pos_rs_0.1-neg_rs_0.01-equ+belu+rule-piecewise' \
+    trainer.experiment_name='pos_rs_0.1-neg_rs_0.01-equ+belu+rule-piecewise_error' \
     +trainer.val_before_train=True \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
