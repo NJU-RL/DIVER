@@ -63,13 +63,13 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.actor.neg_rs_scale=0.01 \
     actor_rollout_ref.actor.rs_type='mix' \
     actor_rollout_ref.actor.high_clip_ratio=0.28 \
-    actor_rollout_ref.actor.low_clip_ratio=0.28 \
+    actor_rollout_ref.actor.low_clip_ratio=0.2 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='div' \
-    trainer.experiment_name='pos_rs_0.1-neg_rs_0.01-equ+belu+rule-piecewise_error' \
+    trainer.experiment_name='pos_rs_0.1-neg_rs_0.01-equ_0.68+belu_0.08+rule-piecewise-all' \
     +trainer.val_before_train=True \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \

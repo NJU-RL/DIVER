@@ -766,8 +766,8 @@ class RayPPOTrainer(object):
                             batch.batch['div_reward'] = div_reward
                         elif self.config.actor_rollout_ref.actor.rs_type == 'mix':
                             rollout_n = self.config.actor_rollout_ref.rollout.n
-                            equ_reward= torch.tensor(np.minimum(np.array(div_equ),0.67).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
-                            belu_reward= -torch.tensor(np.maximum(np.array(div_belu),0.1).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
+                            equ_reward= torch.tensor(np.minimum(np.array(div_equ),0.68).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
+                            belu_reward= -torch.tensor(np.maximum(np.array(div_belu),0.08).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
                             batch.batch['div_reward'] = torch.zeros_like(equ_reward)  # 使用 float32
                             score = reward_tensor.sum(dim=1) #(bsz, )
                             group_is_correct = score.bool().reshape(-1,rollout_n)
@@ -780,9 +780,9 @@ class RayPPOTrainer(object):
                             # print(f"div_reward:{batch.batch['div_reward']}")
                             # print(f"group_acc':{group_acc}")
                             # batch.batch['div_reward'][solve_mix_flag] = equ_reward[solve_mix_flag] * group_acc[solve_mix_flag]
-                            batch.batch['div_reward'][mix_correct_flag] = group_acc[mix_correct_flag]
+                            batch.batch['div_reward'][mix_correct_flag] = 1.0+(equ_reward[mix_correct_flag])*0.001
                             batch.batch['div_reward'][mix_error_flag] = equ_reward[mix_error_flag]*group_acc[mix_error_flag]+belu_reward[mix_error_flag]*(1.0-group_acc[mix_error_flag])
-                            batch.batch['div_reward'][solve_all_flag] = torch.full_like(equ_reward[solve_all_flag], 1.0)
+                            batch.batch['div_reward'][solve_all_flag] = 1.0 +(equ_reward[solve_all_flag])*0.001
                             batch.batch['div_reward'][solve_none_flag] = belu_reward[solve_none_flag]
                             
                         # elif self.config.actor_rollout_ref.actor.rs_type=='mix':
@@ -851,7 +851,9 @@ class RayPPOTrainer(object):
 
                         if self.config.actor_rollout_ref.actor.use_div:
                             # print("start:",old_log_prob.batch['old_hidden_states'])
-                            batch.batch['old_hidden_states'], batch.batch['label_pos']=repeat_by_groups(old_log_prob.batch['old_hidden_states'])
+                            batch.batch['old_hidden_states'], batch.batch['label_pos']=repeat_by_groups(
+                                old_log_prob.batch['old_hidden_states'],
+                                self.config.actor_rollout_ref.rollout.n)
                             # print("end:",batch.batch['old_hidden_states'])
                             score = reward_tensor.sum(dim=1).reshape(-1,self.config.actor_rollout_ref.rollout.n) # (n_group, rollout_n)
                             # print("####reward_tensor:", score.shape)
@@ -865,7 +867,9 @@ class RayPPOTrainer(object):
                             old_log_prob.batch['label_pos'] = None
 
                         if self.config.actor_rollout_ref.actor.use_group_div:
-                            batch.batch['old_group_hidden_states'] = repeat_by_batch(old_log_prob.batch['old_hidden_states']) # (bsz, (n_group-1)*rollout_n, dim)
+                            batch.batch['old_group_hidden_states'] = repeat_by_batch(
+                                old_log_prob.batch['old_hidden_states'],
+                                self.config.actor_rollout_ref.rollout.n) # (bsz, (n_group-1)*rollout_n, dim)
                             # print("target:", old_log_prob.batch['old_hidden_states'][0:8])
                             # print("&&&&0:",batch.batch['old_group_hidden_states'][0])
                             # print("&1:",batch.batch['old_group_hidden_states'][1])
