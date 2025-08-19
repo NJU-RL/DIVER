@@ -785,7 +785,16 @@ class RayPPOTrainer(object):
                             batch.batch['div_reward'][solve_all_flag] = 1.0 +(equ_reward[solve_all_flag])*0.001
                             batch.batch['div_reward'][solve_none_flag] = belu_reward[solve_none_flag]
                             
-                        # elif self.config.actor_rollout_ref.actor.rs_type=='mix':
+                        elif self.config.actor_rollout_ref.actor.rs_type=='scale':
+                            equ_reward = torch.tensor(np.array(div_equ)).reshape(-1)*self.config.actor_rollout_ref.actor.pos_rs_scale
+                            belu_reward = -torch.tensor(np.array(div_belu)).reshape(-1)*self.config.actor_rollout_ref.actor.neg_rs_scale
+                            # print("equ_reward.max:", equ_reward.max(),"\tequ_reward.min:",equ_reward.min())
+                            # print("equ_reward:", equ_reward)
+                            # print("belu_reward.max:", belu_reward.max(),"\tbelu_reward.min:",belu_reward.min())
+                            # print("belu_reward:", belu_reward)
+
+                            # print("is_correct:",reward_tensor.sum(dim=1).bool())
+                            batch.batch['div_reward'] =  (equ_reward+belu_reward) * reward_tensor.sum(dim=1)
                         #     equ_reward= torch.tensor(np.minimum(np.array(div_equ),0.67).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
                         #     belu_reward= -torch.tensor(np.maximum(np.array(div_belu),0.1).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
                         #     batch.batch['div_reward'] = torch.zeros_like(equ_reward)

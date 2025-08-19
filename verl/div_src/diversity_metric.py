@@ -57,7 +57,7 @@ def calculate_equation_matrix(group_rollouts):
 
 def calculate_belu_matrix(group_rollouts):
     n = len(group_rollouts)
-    weights = (0.05, 0.1, 0.15, 0.25, 0.35)
+    weights = (0.02, 0.1, 0.15, 0.25, 0.38)
     similarity_matrix = np.zeros((n, n))
     for i in range(n):
         for j in range(i+1, n):
