@@ -38,7 +38,7 @@ python3 -m verl.div_src.eval_rl \
     data.train_files=dataset/openr1.parquet \
     data.val_files=dataset/$DATASET.parquet \
     data.train_batch_size=128 \
-    data.val_batch_size=64 \
+    data.val_batch_size=128 \
     data.max_prompt_length=1024 \
     data.max_response_length=8192 \
     actor_rollout_ref.model.path=$MODEL_PATH  \
@@ -56,7 +56,7 @@ python3 -m verl.div_src.eval_rl \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.grad_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.temperature=1.0 \
     actor_rollout_ref.rollout.val_temperature=0.6 \
@@ -70,7 +70,7 @@ python3 -m verl.div_src.eval_rl \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='eval_div' \
-    trainer.experiment_name='ood_cl_t_0_6' \
+    trainer.experiment_name='qwen2.5-math-1.5B_diver_ood-step200' \
     +trainer.val_before_train=True \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
