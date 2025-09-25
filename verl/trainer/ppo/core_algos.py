@@ -52,6 +52,43 @@ class FixedKLController:
     def update(self, current_kl, n_steps):
         pass
 
+def agg_loss(loss_mat: torch.Tensor, loss_mask: torch.Tensor, loss_agg_mode: str):
+    """
+    Aggregate the loss matrix into a scalar.
+    Args:
+        loss_mat: `(torch.Tensor)`
+            shape: (bs, response_length)
+        loss_mask: `(torch.Tensor)`
+            shape: (bs, response_length)
+        loss_agg_mode: (str) choices: "token-mean" /
+                                      "seq-mean-token-sum" /
+                                      "seq-mean-token-mean" /
+                                      "seq-mean-token-sum-norm" /
+            "token-mean" is the default behavior
+    Returns:
+        loss: `a scalar torch.Tensor`
+            aggregated loss
+    """
+    if loss_agg_mode == "token-mean":
+        loss = verl_F.masked_mean(loss_mat, loss_mask)
+    elif loss_agg_mode == "seq-mean-token-sum":
+        seq_losses = torch.sum(loss_mat * loss_mask, dim=-1)  # token-sum
+        loss = torch.mean(seq_losses)  # seq-mean
+    elif loss_agg_mode == "seq-mean-token-mean":
+        seq_losses = torch.sum(loss_mat * loss_mask, dim=-1) / torch.sum(loss_mask, dim=-1)  # token-mean
+        loss = torch.mean(seq_losses)  # seq-mean
+    elif loss_agg_mode == "seq-mean-token-sum-norm":
+        seq_losses = torch.sum(loss_mat * loss_mask, dim=-1)
+        loss = torch.sum(seq_losses) / loss_mask.shape[-1]  # The divisor
+        # (loss_mask.shape[-1]) should ideally be constant
+        # throughout training to well-replicate the DrGRPO paper.
+        # TODO: Perhaps add user-defined normalizer argument to
+        # agg_loss to ensure divisor stays constant throughout.
+    else:
+        raise ValueError(f"Invalid loss_agg_mode: {loss_agg_mode}")
+
+    return loss
+
 
 def get_kl_controller(config):
     if config.critic.kl_ctrl.type == 'fixed':
@@ -241,6 +278,101 @@ def compute_reinforce_plus_plus_outcome_advantage(token_level_rewards: torch.Ten
 def compute_rewards(token_level_scores, old_log_prob, ref_log_prob, kl_ratio):
     kl = old_log_prob - ref_log_prob
     return token_level_scores - kl * kl_ratio
+
+def compute_policy_loss_kl_cov(
+    old_log_prob,
+    log_prob,
+    advantages,
+    response_mask,
+    loss_agg_mode="token-mean",
+    k_percent=0.2,
+    ppo_kl_coef=1,
+):
+    negative_approx_kl = log_prob - old_log_prob
+
+    abs_kl = negative_approx_kl.abs()
+
+    ratio = torch.exp(negative_approx_kl)
+
+    ppo_kl_abs = verl_F.masked_mean(negative_approx_kl.abs(), response_mask)
+
+    pg_losses1 = -advantages * ratio
+
+    pg_losses_kl = - advantages * ratio + ppo_kl_coef * abs_kl
+
+    pg_losses = pg_losses1
+
+    all_valid = (response_mask > 0)
+    all_valid_idx = torch.nonzero(all_valid.reshape(-1), as_tuple=True)[0] 
+    all_valid_adv = advantages[all_valid].detach().reshape(-1).cpu()
+    all_valid_logp = log_prob[all_valid].detach().reshape(-1).cpu()
+
+    k = min(k_percent, len(all_valid_adv))
+
+    if k != 0:
+        cov_lst_all = (all_valid_adv - all_valid_adv.mean()) * (all_valid_logp - all_valid_logp.mean())
+        k_percent_nums = max(1, int(len(cov_lst_all) * k / 100))
+        large_cov_idxs = torch.topk(cov_lst_all, k_percent_nums, largest=True).indices
+        
+        if len(large_cov_idxs) != 0:
+            large_cov_idxs = all_valid_idx[large_cov_idxs]
+            pg_losses[large_cov_idxs // advantages.shape[1], large_cov_idxs % advantages.shape[1]] = pg_losses_kl[large_cov_idxs // advantages.shape[1], large_cov_idxs % advantages.shape[1]]
+
+    pg_loss = agg_loss(loss_mat=pg_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+
+    return pg_loss, torch.tensor(0.), ppo_kl_abs
+
+
+def compute_policy_loss_clip_cov(
+    old_log_prob,
+    log_prob,
+    advantages,
+    response_mask,
+    cliprange=None,
+    cliprange_low=None,
+    cliprange_high=None,
+    loss_agg_mode="token-mean",
+    clip_ratio=0.0002,
+    clip_cov_lb=1.0,
+    clip_cov_ub=5.0,
+):
+    negative_approx_kl = log_prob - old_log_prob
+    ratio = torch.exp(negative_approx_kl)
+    ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
+
+    pg_losses1 = -advantages * ratio
+    
+    if cliprange_low is None:
+        cliprange_low = cliprange
+    if cliprange_high is None:
+        cliprange_high = cliprange
+    
+    corr = torch.ones_like(advantages)
+    pg_losses2 = -advantages * torch.clamp(ratio, 1 - cliprange_low, 1 + cliprange_high)
+    clip_by_origin = (pg_losses2 > pg_losses1) & (response_mask > 0)
+    
+    cov_all = (advantages- verl_F.masked_mean(advantages, response_mask)) * (log_prob- verl_F.masked_mean(log_prob.detach(), response_mask))
+    cov_all[response_mask == 0] = -torch.inf
+    cov_all[clip_by_origin] = -torch.inf
+    
+    clip_num = max(int(clip_ratio * response_mask.sum().item()), 1)
+    top_k_idx = (cov_all < clip_cov_ub) & (cov_all > clip_cov_lb) & (response_mask > 0)
+    top_k_idx = torch.nonzero(top_k_idx)
+    
+    if len(top_k_idx) > 0:
+        perm = torch.randperm(len(top_k_idx))
+        top_k_idx = top_k_idx[perm[:min(clip_num, len(top_k_idx))]]
+    else:
+        top_k_idx = torch.empty((0, 2), device=cov_all.device, dtype=torch.long)
+    
+    corr[top_k_idx[:, 0], top_k_idx[:, 1]] = 0
+    
+    pg_clipfrac = verl_F.masked_mean((corr==0).float(), response_mask)
+
+    pg_losses = torch.maximum(pg_losses1, pg_losses2) * corr
+    pg_loss = agg_loss(loss_mat=pg_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+
+    return pg_loss, pg_clipfrac, ppo_kl
 
 
 def compute_policy_loss(old_log_prob, log_prob, advantages, eos_mask, cliprange, cliprangehigh):

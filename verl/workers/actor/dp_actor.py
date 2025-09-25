@@ -530,26 +530,50 @@ class DataParallelPPOActor(BasePPOActor):
                     clip_ratio = self.config.clip_ratio
                     clip_ratio_high = self.config.clip_ratio_high
                     entropy_coeff = self.config.entropy_coeff
-                    contrastive_coeff = self.config.contrastive_coeff
+                    # contrastive_coeff = self.config.contrastive_coeff
+                    loss_mode = self.config.loss_mode
 
                     entropy, log_prob, hidden_states = self._forward_micro_batch(micro_batch=data, temperature=temperature)
                     # constrastive_loss = self.contrastive_loss(hidden_states, old_hidden_states, labels)
                     hidden_states = hidden_states.unsqueeze(dim=1)
 
-                    # print(f'cl mask: {cl_mask}')
+                    if loss_mode == "vanilla":
+                        pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
+                                                                                    log_prob=log_prob,
+                                                                                    advantages=advantages,
+                                                                                    eos_mask=response_mask,
+                                                                                    cliprange=clip_ratio,
+                                                                                    cliprangehigh=clip_ratio_high)
+                    elif loss_mode == "clip_cov":
+                        loss_agg_mode="token-mean"
+                        pg_loss, pg_clipfrac, ppo_kl= core_algos.compute_policy_loss_clip_cov(
+                            old_log_prob=old_log_prob,
+                            log_prob=log_prob,
+                            advantages=advantages,
+                            response_mask=response_mask,
+                            cliprange=clip_ratio,
+                            cliprange_low=clip_ratio,
+                            cliprange_high=clip_ratio_high,
+                            loss_agg_mode=loss_agg_mode,
+                            clip_ratio=0.0002,
+                            clip_cov_lb=1.0,
+                            clip_cov_ub=5.0,
+                        )
 
-                    # contrastive_loss, cos_sim = self._compute_group_contrastive_loss(old_hidden_states, hidden_states, cl_mask, group_mask)
+                    elif loss_mode == "kl_cov":
+                        loss_agg_mode="token-mean"
+                        pg_loss, pg_clipfrac, ppo_kl= core_algos.compute_policy_loss_kl_cov(
+                            old_log_prob=old_log_prob,
+                            log_prob=log_prob,
+                            advantages=advantages,
+                            response_mask=response_mask,
+                            loss_agg_mode=loss_agg_mode,
+                            k_percent=0.2,
+                            ppo_kl_coef=1,
+                        )
 
-                    contrastive_loss, cos_sim = self.disp_loss(old_hidden_states, hidden_states, cl_mask, group_mask)
-
-                    # hidden_states_lst.append((hidden_states))
-
-                    pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
-                                                                                log_prob=log_prob,
-                                                                                advantages=advantages,
-                                                                                eos_mask=response_mask,
-                                                                                cliprange=clip_ratio,
-                                                                                cliprangehigh=clip_ratio_high)
+                    else:
+                        raise ValueError(f"Unsupported loss mode: {self.config.loss_mode}")
                     # print(f'pg loss shape: {pg_loss.shape}')
                     # print(f'pg clip shape: {pg_clipfrac.shape}')
                     # compute entropy loss from entropy
@@ -558,7 +582,7 @@ class DataParallelPPOActor(BasePPOActor):
                     # compute policy loss
                     # contrastive_loss.detach()
                     # print(f'contrastive loss: {contrastive_loss}')
-                    policy_loss = pg_loss - entropy_loss * entropy_coeff + contrastive_coeff * contrastive_loss
+                    policy_loss = pg_loss - entropy_loss * entropy_coeff 
                     if self.config.use_kl_loss:
                         ref_log_prob = data['ref_log_prob']
                         # compute kl loss
@@ -578,8 +602,6 @@ class DataParallelPPOActor(BasePPOActor):
                     data = {
                         'actor/entropy_loss': entropy_loss.detach().item(),
                         'actor/pg_loss': pg_loss.detach().item(),
-                        'actor/contrastive_loss': contrastive_loss.detach().item(),
-                        'actor/cos_sim': cos_sim.item(),
                         'actor/pg_clipfrac': pg_clipfrac.detach().item(),
                         'actor/ppo_kl': ppo_kl.detach().item(),
                     }

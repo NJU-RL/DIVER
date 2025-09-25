@@ -17,6 +17,7 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import os
+import struct
 from turtle import back
 from unittest import result
 import uuid
@@ -24,13 +25,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from pprint import pprint
-from typing import Type, Dict
+from typing import Type, Dict, final
 
 # from networkx import edge_betweenness
 from ninja import expand
 import numpy as np
 from codetiming import Timer
 from omegaconf import OmegaConf, open_dict
+from shapely import length
 from sklearn.calibration import Hidden
 from zmq import device
 from verl import DataProto
@@ -206,16 +208,6 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         advantages, returns = calculate_adv.compute_grpo_outcome_advantage(token_level_rewards=token_level_rewards,
                                                                         eos_mask=response_mask,
                                                                         index=index)
-        # print(f'token_level_rewards shape: {token_level_rewards.shape}')
-        # print(f'token_level_rewards: {token_level_rewards}')
-        # print(f'advantage shape: {advantages.shape}')
-        # for i in range(len(token_level_rewards)):
-        #     print(f'rewards {i}: {torch.where(token_level_rewards[i] == 1)[0]}')
-        # # print(f'advantage: {advantages}')
-        # for i in range(len(advantages)):
-        #     if torch.sum(advantages[i]) != 0:
-        #         print(f'advantage {i}: {torch.where(advantages[i] != 0)[0]}')
-        #         print(advantages[i])
 
 
         data.batch['advantages'] = advantages
@@ -230,6 +222,23 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             token_level_rewards=token_level_rewards, eos_mask=response_mask, gamma=gamma)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
+    
+    elif adv_estimator == 'passk':
+        token_level_rewards = data.batch['token_level_rewards']
+        index = data.non_tensor_batch['uid']
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+
+        from verl.div_src import passk
+        advantages, returns = passk.compute_advantage(token_level_rewards=token_level_rewards,
+                                                       response_mask=response_mask,
+                                                       index=index,
+                                                       K=4)
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+
     else:
         raise NotImplementedError
     return data
@@ -300,6 +309,13 @@ def compute_data_metrics(batch, use_critic=True):
             torch.max(sequence_reward).detach().item(),
         'critic/rewards/min':
             torch.min(sequence_reward).detach().item(),
+        # div rewards
+        'critic/div_rewards/mean':
+            torch.mean(sequence_reward - sequence_score).detach().item(),
+        'critic/div_rewards/max':
+            torch.max(sequence_reward - sequence_score).detach().item(),
+        'critic/div_rewards/min':
+            torch.min(sequence_reward - sequence_score).detach().item(),
         # adv
         'critic/advantages/mean':
             torch.mean(valid_adv).detach().item(),
@@ -481,65 +497,6 @@ class RayPPOTrainer(object):
             self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
             self.config.critic.optim.total_training_steps = total_training_steps
 
-    def _validate(self):
-        reward_tensor_lst = []
-        data_source_lst = []
-        for test_data in self.val_dataloader:
-            test_batch = DataProto.from_single_dict(test_data)
-            # test_batch = test_batch.to('cuda')
-
-            # we only do validation on rule-based rm
-            if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
-                return {}
-
-            n_val_samples = self.config.actor_rollout_ref.rollout.n_val
-            test_batch = test_batch.repeat(repeat_times=n_val_samples, interleave=True)
-            test_gen_batch = test_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
-            test_gen_batch.meta_info = {
-                'eos_token_id': self.tokenizer.eos_token_id,
-                'pad_token_id': self.tokenizer.pad_token_id,
-                'recompute_log_prob': False,
-                'do_sample': False,
-                'validate': True,
-            }
-
-            # pad to be divisible by dp_size
-            test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
-            test_gen_batch_padded.meta_info['val_temperature'] = self.config.actor_rollout_ref.rollout.val_temperature
-            test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
-            # unpad
-            test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
-            print('Validation: Generation end.')
-
-            test_batch = test_batch.union(test_output_gen_batch)
-
-            # evaluate using reward_function
-            # for certain reward function (e.g. sandbox), the generation can overlap with reward
-            reward_tensor = self.val_reward_fn(test_batch)
-
-            reward_tensor_lst.append(reward_tensor)
-            data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
-
-        reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
-        data_sources = np.concatenate(data_source_lst, axis=0)
-        # evaluate test_score based on data source
-        data_source_reward = {}
-        for i in range(reward_tensor.shape[0]):
-            data_source = data_sources[i]
-            if data_source not in data_source_reward:
-                data_source_reward[data_source] = []
-            data_source_reward[data_source].append(reward_tensor[i].item())
-
-        metric_dict = {}
-        average_score = []
-        for data_source, rewards in data_source_reward.items():
-            metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
-            average_score.append(metric_dict[f'val/test_score/{data_source}'])
-        metric_dict[f'val/test_score/average'] = np.mean(average_score)
-
-        return metric_dict
-
-
     # def _validate(self):
     #     reward_tensor_lst = []
     #     data_source_lst = []
@@ -577,12 +534,10 @@ class RayPPOTrainer(object):
     #         reward_tensor = self.val_reward_fn(test_batch)
 
     #         reward_tensor_lst.append(reward_tensor)
-    #         data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))        
+    #         data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
 
     #     reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
-    #     reward_tensor = reward_tensor.reshape(-1, n_val_samples).any(dim=-1) # test pass@N
-    #     data_sources = np.concatenate(data_source_lst, axis=0).reshape(-1, n_val_samples)[:,0]
-    #     # data_sources = np.concatenate(data_source_lst, axis=0)
+    #     data_sources = np.concatenate(data_source_lst, axis=0)
     #     # evaluate test_score based on data source
     #     data_source_reward = {}
     #     for i in range(reward_tensor.shape[0]):
@@ -599,6 +554,67 @@ class RayPPOTrainer(object):
     #     metric_dict[f'val/test_score/average'] = np.mean(average_score)
 
     #     return metric_dict
+
+    # pass@N
+    def _validate(self):
+        reward_tensor_lst = []
+        data_source_lst = []
+        for test_data in self.val_dataloader:
+            test_batch = DataProto.from_single_dict(test_data)
+            # test_batch = test_batch.to('cuda')
+
+            # we only do validation on rule-based rm
+            if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
+                return {}
+
+            n_val_samples = self.config.actor_rollout_ref.rollout.n_val
+            test_batch = test_batch.repeat(repeat_times=n_val_samples, interleave=True)
+            test_gen_batch = test_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
+            test_gen_batch.meta_info = {
+                'eos_token_id': self.tokenizer.eos_token_id,
+                'pad_token_id': self.tokenizer.pad_token_id,
+                'recompute_log_prob': False,
+                'do_sample': False,
+                'validate': True,
+            }
+
+            # pad to be divisible by dp_size
+            test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
+            test_gen_batch_padded.meta_info['val_temperature'] = self.config.actor_rollout_ref.rollout.val_temperature
+            test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
+            # unpad
+            test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
+            print('Validation: Generation end.')
+
+            test_batch = test_batch.union(test_output_gen_batch)
+
+            # evaluate using reward_function
+            # for certain reward function (e.g. sandbox), the generation can overlap with reward
+            reward_tensor = self.val_reward_fn(test_batch)
+
+            reward_tensor_lst.append(reward_tensor)
+            data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))        
+
+        reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
+        reward_tensor = reward_tensor.reshape(-1, n_val_samples).any(dim=-1) # test pass@N
+        data_sources = np.concatenate(data_source_lst, axis=0).reshape(-1, n_val_samples)[:,0]
+        # data_sources = np.concatenate(data_source_lst, axis=0)
+        # evaluate test_score based on data source
+        data_source_reward = {}
+        for i in range(reward_tensor.shape[0]):
+            data_source = data_sources[i]
+            if data_source not in data_source_reward:
+                data_source_reward[data_source] = []
+            data_source_reward[data_source].append(reward_tensor[i].item())
+
+        metric_dict = {}
+        average_score = []
+        for data_source, rewards in data_source_reward.items():
+            metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
+            average_score.append(metric_dict[f'val/test_score/{data_source}'])
+        metric_dict[f'val/test_score/average'] = np.mean(average_score)
+
+        return metric_dict
 
     def init_workers(self):
         """Init resource pool and worker group"""
@@ -627,6 +643,8 @@ class RayPPOTrainer(object):
         elif self.config.algorithm.adv_estimator == 'reinforce_plus_plus':
             self.use_critic = False
         elif self.config.algorithm.adv_estimator == 'remax':
+            self.use_critic = False
+        elif self.config.algorithm.adv_estimator == 'passk':
             self.use_critic = False
         else:
             raise NotImplementedError
@@ -751,21 +769,26 @@ class RayPPOTrainer(object):
                         # {}
                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
 
-                    from verl.div_src.diversity_metric import calculate_belu_matrix, calculate_equation_matrix
+                    from verl.div_src.diversity_metric import calculate_belu_matrix, calculate_equation_matrix, calculate_struct_similarity, think_phrases
                     response_str = self.tokenizer.batch_decode(gen_batch_output.batch['responses'],skip_special_tokens=True)
 
-                    div_belu, div_equ = [],[]
-                    equ_rewards = []
+                    div_belu, div_equ, div_struct = [], [], []
+                    # equ_rewards = []
                     for i in range(len(gen_batch.batch)):
                         group_start = i * self.config.actor_rollout_ref.rollout.n_total
                         group_end = (i+1)*self.config.actor_rollout_ref.rollout.n_total
                         group = response_str[group_start:group_end]
-                        div_belu.append(calculate_belu_matrix(group))
-                        equ_mean, equ_diversity = calculate_equation_matrix(group)
-                        equ_rewards.extend(equ_diversity)
-                        div_equ.append(equ_mean)
+                        div_belu.extend(calculate_belu_matrix(group))
+                        # equ_diversity = calculate_equation_matrix(group)
+                        div_equ.extend(calculate_equation_matrix(group))
+                        # div_equ.append(equ_mean)
+                        div_struct.extend(calculate_struct_similarity(group, phrases_to_extract=think_phrases))
+
                     metrics['div_metric/equ'] = np.mean(div_equ)
                     metrics['div_metric/belu'] = np.mean(div_belu)
+                    metrics['div_metric/struct'] = np.mean(div_struct)
+
+                    # struct_rewards = 1.0 - div_struct
                     
                     # print(f'avg_diversity: {np.mean(avg_diversity)}')
                     
@@ -907,37 +930,166 @@ class RayPPOTrainer(object):
 
                         batch.batch['token_level_rewards'] = batch.batch['token_level_scores'].clone()
 
+   
                         prompt_ids = batch.batch['prompts']
                         prompt_length = prompt_ids.shape[-1]
 
                         valid_positions = batch.batch['attention_mask'][:, prompt_length:].sum(dim=1)
+                        response_lengths = valid_positions
                         valid_positions = valid_positions - 1
-
-                        equ_rewards = torch.tensor(equ_rewards, device=reward_tensor.device)
-
-                        # print("valid_positions shape:", valid_positions.shape)
-                        # print("valid_positions:", valid_positions)
-                        # print("equ_rewards shape:", equ_rewards.shape)
-
-                        # # 2. 确保arange长度正确
-                        # index = torch.arange(len(valid_positions), device=valid_positions.device)
-                        # print("index shape:", index.shape)
-                        
-
                         indices = torch.arange(len(valid_positions), device=valid_positions.device)
-                        # 获取当前位置的值
-                        current_values = batch.batch['token_level_rewards'][indices, valid_positions]
 
-                        # 创建掩码，只在值为0的位置更新
-                        zero_mask = (current_values == 0)
-                        batch.batch['token_level_rewards'][indices[zero_mask], valid_positions[zero_mask]] += 0.1 * equ_rewards[zero_mask]
+                        if self.config.actor_rollout_ref.actor.rs_type=='bleu':
+                            current_values = batch.batch['token_level_rewards'][indices, valid_positions]
+                            zero_mask = (current_values == 1)
 
+                            random_mask = torch.rand(zero_mask.shape, device=zero_mask.device) < 0.5
+                            final_mask = zero_mask & random_mask
 
-                        # batch.batch['token_level_rewards'][torch.arange(len(valid_positions)), valid_positions] += 0.1 * equ_rewards
-
+                            div_reward = 1 - torch.tensor(div_belu)
+                            batch.batch['token_level_rewards'][indices[zero_mask], valid_positions[zero_mask]] += 0.1 * div_reward[zero_mask]
                         
-                        # for i in range(len(batch.batch['token_level_rewards'])):
-                        #     print(batch.batch['token_level_rewards'][i][torch.where(batch.batch['token_level_rewards'][i] > 0)[0]])
+                        elif self.config.actor_rollout_ref.actor.rs_type=='equation':
+                            current_values = batch.batch['token_level_rewards'][indices, valid_positions]
+                            zero_mask = (current_values == 1)
+
+                            # random_mask = torch.rand(zero_mask.shape, device=zero_mask.device) < 0.5
+                            # final_mask = zero_mask & random_mask
+
+                            div_reward = torch.tensor(div_equ)
+
+                            score = reward_tensor.sum(dim=1)
+                            rollout_n = 8
+                            # group_is_correct = score.bool().reshape(-1,rollout_n)
+                            # solve_all_flag = group_is_correct.all(dim=-1).repeat_interleave(rollout_n, dim=0) #(bsz,)
+                            # solve_none_flag = (~group_is_correct.any(dim=-1)).repeat_interleave(rollout_n, dim=0)
+                            # solve_mix_flag = ~(torch.cat([solve_all_flag.view(-1,1), solve_none_flag.view(-1,1)],dim=1).any(dim=1))
+                            # mix_correct_flag = solve_mix_flag & group_is_correct.reshape(-1)
+                            # mix_error_flag = solve_mix_flag & (~group_is_correct.reshape(-1))
+                            # group_acc = (score.reshape(-1,rollout_n).sum(dim=1)/rollout_n).to(div_reward.dtype).repeat_interleave(rollout_n, dim=0) #(bsz,)
+
+                            # solve_all_mask = ~(group_acc == 1)
+
+                            # print(f'group acc: {group_acc}')
+                            # print(f'solve all mask: {solve_all_mask}')
+
+                            # final_mask = zero_mask & solve_all_mask
+
+                            batch.batch['token_level_rewards'][indices[zero_mask], valid_positions[zero_mask]] += 0.1 * div_reward[zero_mask]
+                        
+                        elif self.config.actor_rollout_ref.actor.rs_type=='bleu_group':
+                            div_reward = 1 - torch.tensor(div_belu)
+                            score = reward_tensor.sum(dim=1)
+                            rollout_n = 8
+                            group_is_correct = score.bool().reshape(-1,rollout_n)
+                            solve_all_flag = group_is_correct.all(dim=-1).repeat_interleave(rollout_n, dim=0) #(bsz,)
+                            solve_none_flag = (~group_is_correct.any(dim=-1)).repeat_interleave(rollout_n, dim=0)
+                            solve_mix_flag = ~(torch.cat([solve_all_flag.view(-1,1), solve_none_flag.view(-1,1)],dim=1).any(dim=1))
+                            mix_correct_flag = solve_mix_flag & group_is_correct.reshape(-1)
+                            mix_error_flag = solve_mix_flag & (~group_is_correct.reshape(-1))
+                            group_acc = (score.reshape(-1,rollout_n).sum(dim=1)/rollout_n).to(div_reward.dtype).repeat_interleave(rollout_n, dim=0) #(bsz,)
+
+                            print(f"group_acc: {group_acc}")
+
+                            current_values = batch.batch['token_level_rewards'][indices, valid_positions]
+                            zero_mask = (current_values == 1)
+
+                            random_mask = torch.rand(zero_mask.shape, device=zero_mask.device) < 0.5
+                            final_mask = zero_mask & random_mask
+
+                            # div_reward = 1 - torch.tensor(div_belu)
+
+                            div_reward *= group_acc
+                            print(f"div rewards: {div_reward}")
+
+                            batch.batch['token_level_rewards'][indices[zero_mask], valid_positions[zero_mask]] += 0.1 * div_reward[zero_mask]
+
+                            for i in range(len(batch.batch['token_level_rewards'])):
+                                print(f'rewards {i}: {batch.batch["token_level_rewards"][i][valid_positions[i]]}')
+                        
+                        elif self.config.actor_rollout_ref.actor.rs_type=='struct':
+                            current_values = batch.batch['token_level_rewards'][indices, valid_positions]
+                            zero_mask = (current_values == 1)
+
+                            # add structure rewards
+                            struct_rewards = 1 - torch.tensor(div_struct, device=reward_tensor.device)
+                            struct_rewards = torch.clamp_min(struct_rewards, 0)
+                            
+                            # add lenght penalty
+                            # length_penalties = 1 - response_lengths / 2000
+                            # length_penalties = torch.minimum(length_penalties, torch.zeros_like(length_penalties))
+
+                            # struct_rewards += length_penalties
+
+
+                            batch.batch['token_level_rewards'][indices, valid_positions] += 0.1 * struct_rewards
+
+                        elif self.config.actor_rollout_ref.actor.rs_type=='warmup':
+                            if self.global_steps < 80:
+                                rollout_n = self.config.actor_rollout_ref.rollout.n
+                                # equ_reward= torch.tensor(np.minimum(np.array(div_equ),0.25).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
+                                # belu_reward= -torch.tensor(np.maximum(np.array(div_belu),0.08).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
+                                equ_reward = torch.tensor(div_equ) * 0.01
+                                belu_reward = -torch.tensor(div_belu) * 0.01
+                                # group_acc = (reward_tensor.sum(dim=1).reshape(-1,rollout_n).sum(dim=1)/rollout_n).to(reward_tensor.dtype).repeat_interleave(rollout_n, dim=0)
+                                div_reward =  (equ_reward + belu_reward) * reward_tensor.sum(dim=1)
+                            else:
+                                div_reward = torch.zeros_like(equ_reward)
+                            
+                            batch.batch['token_level_rewards'][indices, valid_positions] += div_reward
+                        
+                        elif self.config.actor_rollout_ref.actor.rs_type=='equ_warmup':
+                            if self.global_steps < 100:
+                                rollout_n = self.config.actor_rollout_ref.rollout.n
+                                # equ_reward= torch.tensor(np.minimum(np.array(div_equ),0.25).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
+                                # belu_reward= -torch.tensor(np.maximum(np.array(div_belu),0.08).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
+                                equ_reward = torch.tensor(div_equ) * 0.01
+                                # belu_reward = -torch.tensor(div_belu) * 0.01
+                                # group_acc = (reward_tensor.sum(dim=1).reshape(-1,rollout_n).sum(dim=1)/rollout_n).to(reward_tensor.dtype).repeat_interleave(rollout_n, dim=0)
+                                div_reward =  equ_reward * reward_tensor.sum(dim=1)
+                            else:
+                                div_reward = torch.zeros_like(equ_reward)
+                            
+                            batch.batch['token_level_rewards'][indices, valid_positions] += div_reward
+                        
+                        elif self.config.actor_rollout_ref.actor.rs_type=='decay':
+                            import math
+                            decay_coefficient = math.cos(min(1.0, self.global_steps / 100.0) * (math.pi / 2))
+                            rollout_n = self.config.actor_rollout_ref.rollout.n
+                            # equ_reward= torch.tensor(np.minimum(np.array(div_equ),0.25).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
+                            # belu_reward= -torch.tensor(np.maximum(np.array(div_belu),0.08).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
+                            equ_reward = torch.tensor(div_equ) * 0.01
+                            belu_reward = -torch.tensor(div_belu) * 0.01
+                            # group_acc = (reward_tensor.sum(dim=1).reshape(-1,rollout_n).sum(dim=1)/rollout_n).to(reward_tensor.dtype).repeat_interleave(rollout_n, dim=0)
+                            # div_reward =  (equ_reward + belu_reward) * reward_tensor.sum(dim=1)
+                            div_reward =  (equ_reward + belu_reward)
+                            div_reward *= decay_coefficient
+                            
+                            batch.batch['token_level_rewards'][indices, valid_positions] += div_reward
+                        
+                        
+                
+
+                        # ================
+                        
+                        # length_penalties = 1 - response_lengths / 1500
+                        # length_penalties = torch.minimum(length_penalties, torch.zeros_like(length_penalties))
+
+                        # equ_rewards = torch.tensor(equ_rewards, device=reward_tensor.device) 
+
+                        # indices = torch.arange(len(valid_positions), device=valid_positions.device)
+                        # # 获取当前位置的值
+                        # current_values = batch.batch['token_level_rewards'][indices, valid_positions]
+
+                        # # 创建掩码，只在值为0的位置更新
+                        # zero_mask = (current_values == 0)
+
+                        # # 创建随机掩码，50%概率为True
+                        # random_mask = torch.rand(zero_mask.shape, device=zero_mask.device) < 0.4
+                        
+                        # final_mask = zero_mask & random_mask
+
+                        # batch.batch['token_level_rewards'][indices[final_mask], valid_positions[final_mask]] += 0.1 * equ_rewards[final_mask]
                         
 
 
@@ -1054,12 +1206,12 @@ class RayPPOTrainer(object):
                           config=OmegaConf.to_container(self.config, resolve=True))
 
         
-        pass_at_n = [1,2,4,8,16,32]
+        pass_at_n = [32]
 
         if self.val_reward_fn is not None:
             for n_val in pass_at_n:
                 avg_metric = {}
-                for i in range(3):
+                for i in range(1):
                     self.config.actor_rollout_ref.rollout.n_val = n_val
                     val_metrics = self._validate()
                     pprint(f'Initial validation metrics: {val_metrics}')

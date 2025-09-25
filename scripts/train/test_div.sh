@@ -28,7 +28,7 @@ fi
 python3 -m verl.div_src.main_rl \
     algorithm.adv_estimator=grpo \
     data.train_files=dataset/openr1.parquet \
-    data.val_files=['dataset/valid.all.parquet'] \
+    data.val_files=dataset/valid.all.parquet \
     data.train_batch_size=128 \
     data.val_batch_size=512 \
     data.max_prompt_length=1024 \
@@ -48,9 +48,12 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.grad_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
+    actor_rollout_ref.actor.clip_ratio=0.2 \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \
-    actor_rollout_ref.actor.entropy_coeff=0.001 \
+    actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.actor.contrastive_coeff=0 \
+    +actor_rollout_ref.actor.rs_type=None \
+    +actor_rollout_ref.actor.loss_mode='vanilla' \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.temperature=1.0 \
@@ -59,15 +62,15 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.n_total=8 \
     actor_rollout_ref.rollout.div_sample=False \
-    actor_rollout_ref.rollout.filter_high_div=True \
+    actor_rollout_ref.rollout.filter_high_div=False \
     actor_rollout_ref.rollout.n_val=1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='div' \
-    trainer.experiment_name='rs_equ_error_01' \
-    +trainer.val_before_train=False \
+    trainer.experiment_name='baseline_02_028_no_entropy' \
+    +trainer.val_before_train=True \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=50 \
