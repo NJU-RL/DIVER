@@ -64,7 +64,7 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.actor.neg_rs_scale=0.0 \
     actor_rollout_ref.actor.rs_type='belu' \
     actor_rollout_ref.actor.high_clip_ratio=0.28 \
-    actor_rollout_ref.actor.low_clip_ratio=0.28 \
+    actor_rollout_ref.actor.low_clip_ratio=0.2 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.critic_warmup=0 \
