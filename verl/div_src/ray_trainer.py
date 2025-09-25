@@ -750,25 +750,17 @@ class RayPPOTrainer(object):
                         metrics['div_metric/belu'] = np.mean(div_belu)
                         
                         decay_coefficient = math.cos(min(1.0, (self.global_steps-100) / 50.0) * (math.pi / 2))
-                        if self.config.actor_rollout_ref.actor.rs_type=='pos_neg_belu':
+                        if self.config.actor_rollout_ref.actor.rs_type=='belu_equ_mix':
                             
                             rollout_n = self.config.actor_rollout_ref.rollout.n
                             equ_reward= torch.tensor(np.minimum(np.array(div_equ),0.42).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
                             belu_reward= (1.0-torch.tensor(np.maximum(np.array(div_belu),0.09)).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
 
                             group_acc = (reward_tensor.sum(dim=1).reshape(-1,rollout_n).sum(dim=1)/rollout_n).to(reward_tensor.dtype).repeat_interleave(rollout_n, dim=0)
-                            # print("a:", group_acc.shape)
-                            # print("b:",  reward_tensor.sum(dim=1).shape)
-                            # print("c:", (equ_reward+belu_reward).shape)
-                            # score = reward_tensor.sum(dim=1) #(bsz, )
-                            # group_is_correct = score.bool().reshape(-1,rollout_n)
-                            # solve_all_flag = group_is_correct.all(dim=-1).repeat_interleave(rollout_n, dim=0) #(bsz,)
                             batch.batch['div_reward'] = torch.zeros_like(belu_reward)
-                            if self.global_steps<60:
+                            if self.global_steps<80:
                                 batch.batch['div_reward']= (belu_reward+equ_reward) * reward_tensor.sum(dim=1)
-                            # else:
-                            #     batch.batch['div_reward'][solve_all_flag] = (equ_reward[solve_all_flag] + belu_reward[solve_all_flag])*decay_coefficient
-                        elif self.config.actor_rollout_ref.actor.rs_type=='pos_belu':
+                        elif self.config.actor_rollout_ref.actor.rs_type=='belu':
                             rollout_n = self.config.actor_rollout_ref.rollout.n
                             belu_reward= (1.0-torch.tensor(np.array(div_belu).reshape(-1)))*self.config.actor_rollout_ref.actor.neg_rs_scale
                             group_acc = (reward_tensor.sum(dim=1).reshape(-1,rollout_n).sum(dim=1)/rollout_n).to(reward_tensor.dtype).repeat_interleave(rollout_n, dim=0)
@@ -776,22 +768,11 @@ class RayPPOTrainer(object):
                             group_is_correct = score.bool().reshape(-1,rollout_n)
                             solve_all_flag = group_is_correct.all(dim=-1).repeat_interleave(rollout_n, dim=0) #(bsz,)
                             batch.batch['div_reward'] = torch.zeros_like(belu_reward)
-                            # if self.global_steps<60:
-                            batch.batch['div_reward'][solve_all_flag] = belu_reward[solve_all_flag]
-
-                                
-                        elif self.config.actor_rollout_ref.actor.rs_type=='belu':
-                            rollout_n = self.config.actor_rollout_ref.rollout.n
-                            belu_reward= -torch.tensor(np.array(div_belu).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
-                            if self.global_steps < 100:
-                                # equ_reward= torch.tensor(np.minimum(np.array(div_equ),0.68).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
-                                group_acc = (reward_tensor.sum(dim=1).reshape(-1,rollout_n).sum(dim=1)/rollout_n).to(reward_tensor.dtype).repeat_interleave(rollout_n, dim=0)
-                                batch.batch['div_reward'] =  ((1.0-group_acc) * belu_reward) * reward_tensor.sum(dim=1) * decay_coefficient
-                            else:
-                                batch.batch['div_reward'] = torch.zeros_like(belu_reward)
+                            if self.global_steps<80:
+                                batch.batch['div_reward'][solve_all_flag] = belu_reward[solve_all_flag]
 
                         elif self.config.actor_rollout_ref.actor.rs_type=='equ':
-                            if self.global_steps < 100:
+                            if self.global_steps < 80:
                                 rollout_n = self.config.actor_rollout_ref.rollout.n
                                 equ_reward= torch.tensor(np.minimum(np.array(div_equ),0.68).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
                                 # belu_reward= -torch.tensor(np.maximum(np.array(div_belu),0.08).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
@@ -799,64 +780,6 @@ class RayPPOTrainer(object):
                                 batch.batch['div_reward'] =  (equ_reward * group_acc) * reward_tensor.sum(dim=1) * decay_coefficient
                             else:
                                 batch.batch['div_reward'] = torch.zeros_like(equ_reward)
-                            
-                        elif self.config.actor_rollout_ref.actor.rs_type == 'mix':
-                            rollout_n = self.config.actor_rollout_ref.rollout.n
-                            equ_reward= torch.tensor(np.minimum(np.array(div_equ),0.68).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
-                            belu_reward= -torch.tensor(np.maximum(np.array(div_belu),0.08).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
-                            batch.batch['div_reward'] = torch.zeros_like(equ_reward)  # 使用 float32
-                            score = reward_tensor.sum(dim=1) #(bsz, )
-                            group_is_correct = score.bool().reshape(-1,rollout_n)
-                            if self.global_steps < 60:
-                                solve_all_flag = group_is_correct.all(dim=-1).repeat_interleave(rollout_n, dim=0) #(bsz,)
-                                solve_none_flag = (~group_is_correct.any(dim=-1)).repeat_interleave(rollout_n, dim=0)
-                                solve_mix_flag = ~(torch.cat([solve_all_flag.view(-1,1), solve_none_flag.view(-1,1)],dim=1).any(dim=1))
-                                mix_correct_flag = solve_mix_flag & group_is_correct.reshape(-1)
-                                mix_error_flag = solve_mix_flag & (~group_is_correct.reshape(-1))
-                                group_acc = (score.reshape(-1,rollout_n).sum(dim=1)/rollout_n).to(batch.batch['div_reward'].dtype).repeat_interleave(rollout_n, dim=0) #(bsz,)
-                                # print(f"div_reward:{batch.batch['div_reward']}")
-                                # print(f"group_acc':{group_acc}")
-                                # batch.batch['div_reward'][solve_mix_flag] = equ_reward[solve_mix_flag] * group_acc[solve_mix_flag]
-                                batch.batch['div_reward'][mix_correct_flag] = 1.0+(equ_reward[mix_correct_flag])*0.001
-                                batch.batch['div_reward'][mix_error_flag] = equ_reward[mix_error_flag]*group_acc[mix_error_flag]+belu_reward[mix_error_flag]*(1.0-group_acc[mix_error_flag])
-                                batch.batch['div_reward'][solve_all_flag] = 1.0 +(equ_reward[solve_all_flag])*0.001
-                                batch.batch['div_reward'][solve_none_flag] = belu_reward[solve_none_flag]
-                            
-                        elif self.config.actor_rollout_ref.actor.rs_type=='warmup':
-                            if self.global_steps < 80:
-                                rollout_n = self.config.actor_rollout_ref.rollout.n
-                                equ_reward= torch.tensor(np.minimum(np.array(div_equ),0.68).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
-                                belu_reward= -torch.tensor(np.maximum(np.array(div_belu),0.08).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
-                                group_acc = (reward_tensor.sum(dim=1).reshape(-1,rollout_n).sum(dim=1)/rollout_n).to(reward_tensor.dtype).repeat_interleave(rollout_n, dim=0)
-                                batch.batch['div_reward'] =  (equ_reward * group_acc + (1.0-group_acc) * belu_reward) * reward_tensor.sum(dim=1) 
-                            else:
-                                batch.batch['div_reward'] = torch.zeros_like(equ_reward)
-
-                        elif self.config.actor_rollout_ref.actor.rs_type=='scale':
-                            rollout_n = self.config.actor_rollout_ref.rollout.n
-                            # equ_reward = torch.tensor(np.array(div_equ)).reshape(-1)*self.config.actor_rollout_ref.actor.pos_rs_scale
-                            # belu_reward = -torch.tensor(np.array(div_belu)).reshape(-1)*self.config.actor_rollout_ref.actor.neg_rs_scale
-                            equ_reward= torch.tensor(np.minimum(np.array(div_equ),0.25).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
-                            belu_reward= -torch.tensor(np.maximum(np.array(div_belu),0.08).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
-                            # print("equ_reward.max:", equ_reward.max(),"\tequ_reward.min:",equ_reward.min())
-                            # print("equ_reward:", equ_reward)
-                            # print("belu_reward.max:", belu_reward.max(),"\tbelu_reward.min:",belu_reward.min())
-                            # print("belu_reward:", belu_reward)
-                            group_acc = (reward_tensor.sum(dim=1).reshape(-1,rollout_n).sum(dim=1)/rollout_n).to(reward_tensor.dtype).repeat_interleave(rollout_n, dim=0)
-
-                            # print("is_correct:",reward_tensor.sum(dim=1).bool())
-                            batch.batch['div_reward'] =  (equ_reward * group_acc + (1.01-group_acc) * belu_reward) * reward_tensor.sum(dim=1)
-                        #     equ_reward= torch.tensor(np.minimum(np.array(div_equ),0.67).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
-                        #     belu_reward= -torch.tensor(np.maximum(np.array(div_belu),0.1).reshape(-1))*self.config.actor_rollout_ref.actor.neg_rs_scale
-                        #     batch.batch['div_reward'] = torch.zeros_like(equ_reward)
-                        #     group_score = reward_tensor.bool().sum(dim=1).reshape(-1,self.config.actor_rollout_ref.rollout.n)
-                        #     solve_all_flag = group_score.all(dim=-1).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0) #(bsz,)
-                        #     solve_none_flag = (~group_score.any(dim=-1)).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0)
-                        #     solve_mix_flag = ~(torch.cat([solve_all_flag.view(-1,1), solve_none_flag.view(-1,1)],dim=1).any(dim=1))
-                        #     group_acc = (group_score.sum(dim=1)/self.config.actor_rollout_ref.rollout.n).repeat_interleave(self.config.actor_rollout_ref.rollout.n, dim=0) #(bsz,)
-                        #     batch.batch['div_reward'][solve_mix_flag] = equ_reward[solve_mix_flag] * group_acc[solve_mix_flag]
-                        #     batch.batch['div_reward'][solve_all_flag] = equ_reward[solve_all_flag] * 1.2
-                        #     batch.batch['div_reward'][solve_none_flag] = belu_reward[solve_none_flag]
                         else:
                             equ_reward= torch.tensor(np.array(div_equ).reshape(-1))*self.config.actor_rollout_ref.actor.pos_rs_scale
                             batch.batch['div_reward'] = torch.zeros_like(equ_reward)

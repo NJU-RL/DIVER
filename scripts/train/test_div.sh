@@ -62,7 +62,7 @@ python3 -m verl.div_src.main_rl \
     actor_rollout_ref.actor.group_div_coeff=0.01 \
     actor_rollout_ref.actor.pos_rs_scale=1.0 \
     actor_rollout_ref.actor.neg_rs_scale=0.0 \
-    actor_rollout_ref.actor.rs_type='pos_neg_belu' \
+    actor_rollout_ref.actor.rs_type='belu' \
     actor_rollout_ref.actor.high_clip_ratio=0.28 \
     actor_rollout_ref.actor.low_clip_ratio=0.28 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
