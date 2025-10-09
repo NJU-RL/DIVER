@@ -70,6 +70,8 @@ huggingface-cli download --resume-download huzican/Qwen2.5-Math-7B-16k-think --l
   bash scripts/eval/eval_checkpoint.sh --model $CHECKPOINTS_PATH
 ```
 
+---
+
 ## 📊Main Results
 ### Zero RLVR on DIVER vs. Baselines based on Qwen2.5-Math-7B
 <div align="center">
@@ -81,9 +83,13 @@ huggingface-cli download --resume-download huzican/Qwen2.5-Math-7B-16k-think --l
   <img src="figures/passk.png" alt="result" style="width: 95%; height: auto;">
 </div>
 
+---
+
 ## ✨Acknowledgement
 DIVER builds upon [veRL](https://github.com/volcengine/verl) and [deepscaler](https://github.com/agentica-project/rllm), and utilizes [vLLM](https://github.com/vllm-project/vllm) for inference. We utilize [Math-Verify](https://github.com/huggingface/Math-Verify) for RLVR reward model. 
 We thank the open-source community for datasets and backbones, including [OpenR1-Math-220k](https://huggingface.co/datasets/open-r1/OpenR1-Math-220k), [OpenR1-Math-46k](https://huggingface.co/datasets/Elliott/Openr1-Math-46k-8192), [Qwen-2.5](https://huggingface.co/collections/Qwen/qwen25-66e81a666513e518adb90d9e) and [Llama-3.1](https://huggingface.co/collections/meta-llama/llama-31-669fc079a0c406a149a5738f) model. 
+
+---
 
 ## 📝**Citation**
 
@@ -91,7 +97,7 @@ If you find our paper useful, please consider to star this repository and cite i
 ```tex
 @article{hu2025diversity,
   title={Diversity-Incentivized Exploration for Versatile Reasoning},
-  author={Hu, Zican and Zhang, Shilin and Li, Yafu and Yan, Jianhao and Hu, Xuyang and Cui, Leyang and Qu, Xiaoye and Chen, Chunlin and Cheng, Yu and Wang, Zhi},
+  author={Zican Hu and Shilin Zhang and Yafu Li and Jianhao Yan and Xuyang Hu and Leyang Cui and Xiaoye Qu and Chunlin Chen and Yu Cheng and Zhi Wang},
   journal={arXiv preprint arXiv:2509.26209},
   year={2025}
 }
