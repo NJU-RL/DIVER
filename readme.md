@@ -17,7 +17,7 @@ Zican Hu<sup>12*</sup>, Shilin Zhang<sup>12*</sup>, Yafu Li<sup>2†[✉]()</sup
 
 <sup>*</sup>Equal contributions. Zican Hu and Shilin Zhang are listed alphabetically by last name. <sup>†</sup>Project lead. <sup>[✉]()</sup> Corresponding authors.
 
-**Contact:** {zicanhu,shilinzhang}@smail.nju.edu.cn, yafuly@gmail.com, chengyu@cse.cuhk.edu.hk, zhiwang@nju.edu.cn
+**Contact:** zicanhu@smail.nju.edu.cn, shilinzhang@smail.nju.edu.cn, yafuly@gmail.com, chengyu@cse.cuhk.edu.hk, zhiwang@nju.edu.cn
 
 ## ⭐**Overview**
 ![DIVER](figures/framework.png)
