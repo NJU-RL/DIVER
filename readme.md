@@ -71,7 +71,7 @@ huggingface-cli download --resume-download huzican/Qwen2.5-Math-7B-16k-think --l
 ```
 
 ## 📊Main Results
-### Zero RLVR on Qwen2.5-Math-7B vs. Basline
+### Zero RLVR on DIVER vs. Basline based on Qwen2.5-Math-7B
 <div align="center">
   <img src="figures/main_result.png" alt="result" style="width: 95%; height: auto;">
 </div>
