@@ -18,7 +18,7 @@ Zican Hu<sup>12*</sup>, Shilin Zhang<sup>12*</sup>, Yafu Li<sup>2†[✉]()</sup
 **Contact:** {zicanhu,shilinzhang}@smail.nju.edu.cn, yafuly@gmail.com, chengyu@cse.cuhk.edu.hk, zhiwang@nju.edu.cn
 
 ## ⭐**Overview**
-![DIVER](./DIVER/figures/framwork.pdf)
+![DIVER](figures/framework.png)
 
 ---
 
@@ -32,6 +32,9 @@ Incorporating the intrinsic reward, we develop a potential-based reward shaping 
 - **Promoting Global Diversity for Deep Exploration**
 - **Mitigating Reward Hacking**
 
+  <div align="">
+    <img src="figures/insight.png" alt="result" style="width: 50%; height: auto;">
+  </div>
 ---
 
 ## 🚀Usage
@@ -73,7 +76,7 @@ huggingface-cli download --resume-download huzican/Qwen2.5-Math-7B-16k-think --l
 
 ### Comparison of different Pass@k performance
 <div align="center">
-  <img src="figures/passk.pdf" alt="result" style="width: 95%; height: auto;">
+  <img src="figures/passk.png" alt="result" style="width: 95%; height: auto;">
 </div>
 
 ## ✨Acknowledgement
