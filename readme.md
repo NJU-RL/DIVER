@@ -15,6 +15,8 @@ Zican Hu<sup>12*</sup>, Shilin Zhang<sup>12*</sup>, Yafu Li<sup>2†[✉]()</sup
 
 <sup>1</sup>Nanjing University  <sup>2</sup>Shanghai AI Laboratory  <sup>3</sup>The Chinese University of Hong Kong  <sup>4</sup>Westlake University
 
+<sup>*</sup>Equal contributions. Zican Hu and Shilin Zhang are listed alphabetically by last name. <sup>†</sup>Project lead. <sup>[✉]()</sup> Corresponding authors.
+
 **Contact:** {zicanhu,shilinzhang}@smail.nju.edu.cn, yafuly@gmail.com, chengyu@cse.cuhk.edu.hk, zhiwang@nju.edu.cn
 
 ## ⭐**Overview**
